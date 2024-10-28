@@ -137,6 +137,28 @@ def s_distribution_from_hard_y(
     return distr
 
 
+def s_distribution_from_prediction_y(
+    pred_y, pr_oracle, secret_range_func, coding, distrib_secret, sum_weight
+):
+    distr = [0] * len(secret_range_func(sum_weight))
+    for y in it.product(range(2), repeat=len(coding[0])):
+        pr_y_saved = pr_y(
+            y, pr_oracle, secret_range_func, coding, distrib_secret, sum_weight
+        )
+        for i, s in enumerate(secret_range_func(sum_weight)):
+            distr[i] += pr_cond_xy(
+                s,
+                y,
+                pr_oracle,
+                secret_range_func,
+                coding,
+                distrib_secret,
+                sum_weight,
+                pr_y_saved,
+            ) * pr_of_y_from_prediction(pred_y, y)
+    return distr
+
+
 def pr_cond_yx_adaptive(y, s, pr_oracle, coding_tree):
     # compute Pr[Y = y | X = e(s)]
     res = 1
@@ -190,12 +212,17 @@ def pr_cond_xy_adaptive(
     )
 
 
+# Return the conditional probability given some output y that was obtained
+# following a tree. It is computed by trying all possible inputs of the secret
 def s_distribution_from_hard_y_adaptive(
     y, pr_oracle, secret_range_func, coding_tree, distrib_secret, sum_weight
 ):
     # assume here that distrib_secret include probabilities for all values, i.e.
     # distrib_secret[s] is 0 for non-existent s in original distrib_secret
     distr = [0] * (2 * sum_weight + 1)
+    pr_y_saved = pr_y_adaptive(
+        y, pr_oracle, secret_range_func, coding_tree, distrib_secret, sum_weight
+    )
     for i, s in enumerate(secret_range_func(sum_weight)):
         distr[i] = pr_cond_xy_adaptive(
             s,
@@ -205,28 +232,38 @@ def s_distribution_from_hard_y_adaptive(
             coding_tree,
             distrib_secret,
             sum_weight,
-            None,
+            pr_y_saved,
         )
     return distr
 
 
-def s_distribution_from_prediction_y(
-    pred_y, pr_oracle, secret_range_func, coding, distrib_secret, sum_weight
+# As an input we have a prediction y, i.e. for some secret value we follow the tree, then some oracle not only choosing left or right, but giving certainty that we should go left or right (it is treated as probability), we go left if this probability < 0.5, right otherwise. In the adaptive case we can't check the all tree, we essentially have hard y (the checks are fixed), we just modify conditional probability by certainty of prediction y
+def s_distribution_from_prediction_y_adaptive(
+    pred_y, secret_range_func, coding_tree, distrib_secret, sum_weight
 ):
-    distr = [0] * len(secret_range_func(sum_weight))
-    for y in it.product(range(2), repeat=len(coding[0])):
-        pr_y_saved = pr_y(
-            y, pr_oracle, secret_range_func, coding, distrib_secret, sum_weight
-        )
-        for i, s in enumerate(secret_range_func(sum_weight)):
-            distr[i] += pr_cond_xy(
-                s,
-                y,
-                pr_oracle,
-                secret_range_func,
-                coding,
-                distrib_secret,
-                sum_weight,
-                pr_y_saved,
-            ) * pr_of_y_from_prediction(pred_y, y)
+    hard_y = tuple(round(pred_y_val) for pred_y_val in pred_y)
+    # assume here that distrib_secret include probabilities for all values, i.e.
+    # distrib_secret[s] is 0 for non-existent s in original distrib_secret
+    distr = [0] * (2 * sum_weight + 1)
+    for i, s in enumerate(secret_range_func(sum_weight)):
+        node = coding_tree
+        pr = distrib_secret[s]
+        for y_val, y_pred_val in zip(hard_y, pred_y):
+            if node.ge_flag:
+                expected_bit = int(s >= node.value)
+            else:
+                expected_bit = int(s <= node.value)
+            if expected_bit == 0:
+                pr *= 1 - y_pred_val
+            else:
+                pr *= y_pred_val
+            if y_val == 1:
+                node = node.right
+            else:
+                node = node.left
+        distr[i] = pr
+    # normalizing step
+    t = sum(distr)
+    for i in range(len(distr)):
+        distr[i] /= t
     return distr
