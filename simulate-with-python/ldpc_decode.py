@@ -3,7 +3,7 @@ import sys
 
 import coloredlogs
 import numpy as np
-from simulate_rs import DecoderNTRU761W2, DecoderNTRU761W4
+from simulate_rs import DecoderNTRUW2, DecoderNTRUW4, DecoderNTRUW6
 
 coloredlogs.install(level="DEBUG", logger=None)
 
@@ -115,11 +115,15 @@ check_variables = np.array(check_variables, dtype=np.float32)
 
 # print("Creating decoder")
 if check_weight == 2:
-    decoder = DecoderNTRU761W2(
+    decoder = DecoderNTRUW2(
         H.astype("int8"), max_col_weight, max_row_weight, iterations
     )
 elif check_weight == 4:
-    decoder = DecoderNTRU761W4(
+    decoder = DecoderNTRUW4(
+        H.astype("int8"), max_col_weight, max_row_weight, iterations
+    )
+elif check_weight == 6:
+    decoder = DecoderNTRUW6(
         H.astype("int8"), max_col_weight, max_row_weight, iterations
     )
 else:

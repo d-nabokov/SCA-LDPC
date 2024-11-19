@@ -21,6 +21,7 @@ from simulate_rs import DecoderNTRUW2, DecoderNTRUW4, DecoderNTRUW6
 
 q = 2048
 n = 509
+NTRU_N = n
 
 
 def entropy(distr):
@@ -192,89 +193,108 @@ def ldpc_decode(idxs, distrs, iterations, prior_secret_variables, sum_weight):
 # THIRD: choose "good" list of check variables
 # here we can choose check variables with different parameters, e.g. ask a few with
 # weight 2, then a few with weight 4
-attack_params = []
-random.seed(0)
+seed = 4
+while True:
+    attack_params = []
+    random.seed(seed)
 
-sum_weight = 2
-u_list = []
-# naive idea: generate random indices for the first row, then just shift it; repeat a few times
-u_base = sorted(random.sample(range(n), sum_weight))
-for offset in range(n):
-    u_list.append(list((u_val + offset) % n for u_val in u_base))
-coding_tree = tree_from_array([(True, 1), (False, -1), (True, 2), None, (False, -2)])
-attack_params.append((u_list, coding_tree, sum_weight))
-sum_weight = 4
-u_list = []
-# naive idea: generate random indices for the first row, then just shift it; repeat a few times
-u_base = sorted(random.sample(range(n), sum_weight))
-for offset in range(n):
-    u_list.append(list((u_val + offset) % n for u_val in u_base))
-coding_tree = tree_from_array(
-    [
-        (True, 1),
-        (False, -1),
-        (True, 2),
-        None,
-        (False, -2),
-        None,
-        (True, 3),
-        None,
-        None,
-        None,
-        (False, -3),
-    ]
-)
-# can also create trees from the table (same result):
-coding_tree = tree_from_coding(
-    [
-        (0, 1, 1, 1),
-        (0, 1, 1, 1),
-        (0, 1, 1, 0),
-        (0, 1, 0),
-        (0, 0),
-        (1, 0),
-        (1, 1, 0),
-        (1, 1, 1),
-        (1, 1, 1),
-    ]
-)
-attack_params.append(
-    (
-        u_list,
-        coding_tree,
-        sum_weight,
+    sum_weight = 2
+    u_list = []
+    # naive idea: generate random indices for the first row, then just shift it; repeat a few times
+    u_base = sorted(random.sample(range(NTRU_N), sum_weight))
+    for offset in range(NTRU_N - 80):
+        u_list.append(list((u_val + offset) % NTRU_N for u_val in u_base))
+    coding_tree = tree_from_array(
+        [(True, 1), (False, -1), (True, 2), None, (False, -2)]
     )
-)
-patterns = [(0, 1, 1), (0, 1, 0), (0, 0), (1, 0), (1, 1)]
-coding_tree = tree_from_coding(patterns)
+    attack_params.append((u_list, coding_tree, sum_weight))
 
-# check that among our check variables there are no cycles of length 4
-total_u_list = sum((params[0] for params in attack_params), [])
-is_bad_list = has_length_4_cycle(total_u_list)
-assert (
-    not is_bad_list
-), "Check variables have a cycle of length 4, try different random.seed()"
+    #     sum_weight = 4
+    #     u_list = []
+    #     u_base = sorted(random.sample(range(NTRU_N), sum_weight))
+    #     for offset in range(200):
+    #         u_list.append(list((u_val + offset) % NTRU_N for u_val in u_base))
+    #     coding_tree = tree_from_coding(
+    #         [
+    #             (0, 1, 1, 1, 1),
+    #             (0, 1, 1, 1, 0),
+    #             (0, 1, 1, 0),
+    #             (0, 1, 0),
+    #             (0, 0),
+    #             (1, 0),
+    #             (1, 1, 0),
+    #             (1, 1, 1, 0),
+    #             (1, 1, 1, 1),
+    #         ]
+    #     )
+    #     attack_params.append(
+    #         (
+    #             u_list,
+    #             coding_tree,
+    #             sum_weight,
+    #         )
+    #     )
+    sum_weight = 6
+    u_list = []
+    u_base = sorted(random.sample(range(NTRU_N), sum_weight))
+    for offset in range(NTRU_N - 355):
+        u_list.append(list((u_val + offset) % NTRU_N for u_val in u_base))
+    coding_tree = tree_from_coding(
+        [
+            (0, 1, 1, 1, 1, 1, 1),
+            (0, 1, 1, 1, 1, 1, 0),
+            (0, 1, 1, 1, 1, 0),
+            (0, 1, 1, 1, 0),
+            (0, 1, 1, 0),
+            (0, 1, 0),
+            (0, 0),
+            (1, 0),
+            (1, 1, 0),
+            (1, 1, 1, 0),
+            (1, 1, 1, 1, 0),
+            (1, 1, 1, 1, 1, 0),
+            (1, 1, 1, 1, 1, 1),
+        ]
+    )
+    attack_params.append(
+        (
+            u_list,
+            coding_tree,
+            sum_weight,
+        )
+    )
+
+    # check that among our check variables there are no cycles of length 4
+    total_u_list = sum((params[0] for params in attack_params), [])
+    is_bad_list = has_length_4_cycle(total_u_list)
+    if is_bad_list:
+        seed += 1
+    else:
+        break
+print(f"managed to succeed with {seed=}")
 max_sum_weight = max(params[2] for params in attack_params)
 
+# max_sum_weight = 10
 
-pr_oracle = SimpleOracle(0.95)  # Bernoulli noise
+pr_oracle = SimpleOracle(0.995)  # Bernoulli noise
 s_distr = secret_distr()
-beta_distr = list(sum_secret_distr(s_distr, i + 1) for i in range(sum_weight))
-# for i, distr in enumerate(beta_distr):
-#     print(f"weight = {i+1}, entropy = {float(entropy(distr)):.3f}")
-#     print(", ".join(f"{float(x):.4f}" for x in distr.values()))
+beta_distr = list(sum_secret_distr(s_distr, i + 1) for i in range(max_sum_weight))
+for i, distr in enumerate(beta_distr):
+    print(f"weight = {i+1}, entropy = {float(entropy(distr)):.3f}")
+    print(", ".join(f"{float(x):.4f}" for x in distr.values()))
 s_distr_flat = list((s_distr[-1], s_distr[0], s_distr[1]))
 s_prior = list(s_distr_flat for _ in range(n))
 
 # print("Coding tree gives (no more than) the following information per check variable")
+# coding_tree = tree_from_array([(True, 1), (False, -1), (True, 2), None, (False, -2)])
 # for i, distr in enumerate(beta_distr):
-#     if i % 2 == 1:
+#     if i % 2 == 0:
 #         continue
 #     info, avg_length = information_for_coding_tree(
 #         pr_oracle, secret_range, coding_tree, distr, i + 1
 #     )
-#     print(f"{i=}, {info=}, {avg_length=}")
-
+#     print(f"weight={i+1}, {info=}, {avg_length=}, ratio={info/avg_length}")
+# raise ValueError()
 # print("====================")
 
 TEST_KEYS = 100
