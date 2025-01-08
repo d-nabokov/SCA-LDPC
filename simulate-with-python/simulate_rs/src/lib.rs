@@ -19,6 +19,8 @@ mod hqc;
 mod pydecoder;
 mod decoder_special;
 pub use decoder_special::{DecoderSpecial};
+mod decoder_joint_distribution;
+pub use decoder_joint_distribution::{DecoderJointDistribution};
 
 
 
@@ -68,6 +70,13 @@ fn simulate_rs(_py: Python, m: &PyModule) -> PyResult<()> {
         m <= DecoderNTRUW6 {
             B: 1,
             BSUM: 6
+        }
+    );
+
+    register_py_decoder_joint_distribution_class!(
+        m <= DecoderKyberB2SW2 {
+            B: 2,
+            DC: 3
         }
     );
 

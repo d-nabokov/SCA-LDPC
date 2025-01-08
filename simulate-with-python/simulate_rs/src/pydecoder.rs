@@ -142,3 +142,71 @@ macro_rules! register_py_decoder_special_class {
         $m.add_class::<$Name>()?;
     }};
 }
+
+
+/// Use this macro to create new special q-ary decoders working over joint distribution for different sizes/parameters
+///
+/// # Usage:
+///
+/// register_py_decoder_joint_distribution_class!(module <= Name{
+///     B: <first N-R variables assumed to have values from the range [-B, ..., 0, ..., B]>
+///     DC: <Maximum check node degree (num variables, per check)>,
+/// });
+/// where N - number of columns, R - number of rows in the parity check matrix
+macro_rules! register_py_decoder_joint_distribution_class {
+    ($m:ident <= $Name:ident{B: $B:literal, DC: $DC:literal}) => {{
+        const BSIZE: usize = $B * 2 + 1;
+        const JOINTSIZE: usize = BSIZE.pow($DC as u32 - 1);
+        type CustomDecoder = DecoderJointDistribution<$B, BSIZE, $DC, JOINTSIZE, i8>;
+
+        #[pyclass]
+        struct $Name {
+            decoder: CustomDecoder,
+        }
+
+        #[pymethods]
+        impl $Name {
+            #[new]
+            fn new(py_parity_check: PyReadonlyArray2<i8>, DV: usize, iterations: u32) -> Result<Self> {
+                let py_parity_check = py_parity_check.as_array();
+                let (R, _) = py_parity_check.dim();
+
+                let mut parity_check: Vec<Vec<i8>> = Vec::with_capacity(R);
+                for row in py_parity_check.outer_iter() {
+                    parity_check.push(row.to_vec());
+                }
+                Ok($Name {
+                    decoder: DecoderJointDistribution::new(parity_check, DV, iterations),
+                })
+            }
+
+            fn min_sum(&self, py: Python<'_>, py_channel_output: PyReadonlyArray2<FloatType>, py_channel_output_sum: PyReadonlyArray2<FloatType>) -> Result<Vec<i8>> {
+                let py_channel_output = py_channel_output.as_array();
+                let py_channel_output_sum = py_channel_output_sum.as_array();
+                let R = py_channel_output_sum.dim().0;
+                let SV = py_channel_output.dim().0;
+                py.allow_threads(||{
+                    let mut channel_output: Vec<Vec<FloatType>> = vec![vec![0.0; 2 * $B + 1]; SV];
+                    let mut channel_output_sum: Vec<Vec<FloatType>> = vec![vec![0.0; JOINTSIZE]; R];
+
+                    for (variable, output_row) in channel_output.iter_mut().enumerate() {
+                        for (value, output_value) in output_row.iter_mut().enumerate() {
+                            *output_value = py_channel_output[(variable, value)].into();
+                        }
+                    }
+
+                    for (variable, output_sum_row) in channel_output_sum.iter_mut().enumerate() {
+                        for (value, output_sum_value) in output_sum_row.iter_mut().enumerate() {
+                            *output_sum_value = py_channel_output_sum[(variable, value)].into();
+                        }
+                    }
+                    let channel_llr = CustomDecoder::into_llr(&channel_output);
+                    let channel_llr_sum = CustomDecoder::into_llr(&channel_output_sum);
+                    self.decoder.min_sum(channel_llr, channel_llr_sum)
+                })
+            }
+        }
+
+        $m.add_class::<$Name>()?;
+    }};
+}
