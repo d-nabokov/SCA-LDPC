@@ -1,6 +1,8 @@
 import itertools as it
 import random
 
+import numpy as np
+
 
 class BaseOracle:
     def __init__(self):
@@ -10,6 +12,7 @@ class BaseOracle:
         raise NotImplementedError()
 
 
+# Implements binary symmetric channel with probability p to output correct bit
 class SimpleOracle(BaseOracle):
     # p: accuracy of oracle
     def __init__(self, p):
@@ -31,6 +34,8 @@ class SimpleOracle(BaseOracle):
             return 1 - actual_bit
 
 
+# Implements binary channel with different probabilities for output depending on input, i.e.
+# there is false positive and false negative probabilities
 class FalsePositiveNegativePositionalOracle(BaseOracle):
     # as input p_positional should be array of tuples, where tuple i contains a pair of
     # probability of false positive and false negative, resp., for pos == i.
@@ -135,6 +140,33 @@ def s_distribution_from_hard_y(
             pr_y_saved,
         )
     return distr
+
+# Compute Pr[S = s | Y = y] for all possible y. Assume that coding have the same number of bits for
+# all s
+# return Pr[S = s | Y = y] and Pr[Y = y] for all y
+def s_distribution_for_all_y(pr_oracle, coding, secret_range_func, secret_prob_func):
+    assert coding is not None and len(coding) >= 1 and len(coding[0]) >= 1
+    ybits = len(coding[0])
+
+    res = np.zeros((2**ybits, len(coding)), dtype=np.float32)
+    for j, s in enumerate(secret_range_func()):
+        s_prob = secret_prob_func(s)
+        x = coding[j]
+        for i, y in enumerate(it.product(range(2), repeat=ybits)):
+            res[i][j] = s_prob * pr_cond_yx(y, x, pr_oracle)
+
+    # Compute Pr[Y = y]
+    pr_of_y = np.sum(res, axis=1)
+
+    # Here we divide each probability by Pr[Y = y]
+    for i in range(2**ybits):
+        pr = pr_of_y[i]
+        if pr == 0:
+            # initialize all probabilities to nan
+            res[i] = None
+        else:
+            res[i] = res[i] / pr
+    return res, pr_of_y
 
 
 def s_distribution_from_prediction_y(

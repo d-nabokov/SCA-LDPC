@@ -102,15 +102,6 @@ pub type FloatType = f32;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct QaryLlrs<const B: usize>([FloatType; B]);
 
-// Returns the arguments ordered by value
-fn min_max<I: PartialOrd>(in1: I, in2: I) -> (I, I) {
-    if in1 < in2 {
-        (in1, in2)
-    } else {
-        (in2, in1)
-    }
-}
-
 impl<const Q: usize> QaryLlrs<Q> {
     // q-ary'ily Add self with term
     fn qary_add(&self, term: Self) -> Self {
@@ -134,47 +125,6 @@ impl<const Q: usize> QaryLlrs<Q> {
         let mut ret = Self([FloatType::INFINITY; Q]);
         for q in 0..Q {
             ret.0[q] = self.0[q] - self.0[arg_min];
-        }
-        ret
-    }
-
-    // assume hij is 1 or -1, after multiplication array is the same (hij==1) or reversed
-    fn mult_in_gf(&self, hij: i8) -> Self {
-        let mut ret = Self(self.0);
-        if hij < 0 {
-            for q in 0..Q {
-                ret.0[q] = self.0[Q - q - 1];
-            }
-        }
-        ret
-    }
-
-    // q-ary'ily Add self with term multiplied by hij
-    fn qary_add_with_mult_in_gf(&self, term: Self, hij: i8) -> Self {
-        let mut ret = Self([FloatType::INFINITY; Q]);
-        if hij > 0 {
-            for q in 0..Q {
-                ret.0[q] = self.0[q] + term.0[q];
-            }
-        } else {
-            for q in 0..Q {
-                ret.0[q] = self.0[q] + term.0[Q - q - 1];
-            }
-        }
-        ret
-    }
-
-    // q-ary'ily Subtract self with term multiplied by hij
-    fn qary_sub_with_mult_in_gf(&self, subtrahend: Self, hij: i8) -> Self {
-        let mut ret = Self([FloatType::INFINITY; Q]);
-        if hij > 0 {
-            for q in 0..Q {
-                ret.0[q] = self.0[q] - subtrahend.0[q];
-            }
-        } else {
-            for q in 0..Q {
-                ret.0[q] = self.0[q] - subtrahend.0[Q - q - 1];
-            }
         }
         ret
     }
@@ -657,7 +607,6 @@ where
         index
     }
 
-
     pub fn b2i<const T: usize>(val: BType) -> usize
     where
         BType: TryInto<usize>,
@@ -668,74 +617,48 @@ where
     }
 }
 
-fn into_or_panic<T, U>(from: T) -> U
-where
-    T: TryInto<U>,
-{
-    match from.try_into() {
-        Ok(val) => val,
-        Err(_) => panic!("Failed conversion!"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    type MyTinyTestDecoder = DecoderJointDistribution<2, 5, 3, 25, i8>;
 
     #[test]
-    fn into_llr() {
-        /* let channel_output = [[
-            0.0, 0.0, 0.0, 0.0, 0.14, 0.14, 0.14, 0.14, 0.14, 0.14, 0.14, 0.02, 0.0, 0.0, 0.0,
-        ]; MyTinyTestDecoder::N];
-        let llr = MyTinyTestDecoder::into_llr(&channel_output);
-        let expected = [QaryLlrs([
-            FloatType::INFINITY,
-            FloatType::INFINITY,
-            FloatType::INFINITY,
-            FloatType::INFINITY,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            //1.9459101490553135,
-            1.945_910_1,
-            FloatType::INFINITY,
-            FloatType::INFINITY,
-            FloatType::INFINITY,
-        ]); MyTinyTestDecoder::N];
-        assert_eq!(expected, llr); */
-    }
+    fn small_kyber_like_test_no_errors() {
+        let parity_check = vec![
+            vec![1, 1, 0, 0, 1, 0],
+            vec![0, 0, 1, 1, 0, 1],
+        ];
 
-    #[test]
-    fn it_works() {
-/*         let decoder_6_3_4_3_gf16 = MyTinyTestDecoder::new(
-            [
-                [true, true, true, true, false, false],
-                [false, false, true, true, false, true],
-                [true, false, false, true, true, false],
-            ],
-            10,
-        );
+        let decoder = MyTinyTestDecoder::new(parity_check, 1, 7);
 
-        // Zero message with zero noise
-        let mut channel_output = [[0.0; MyTinyTestDecoder::Q]; MyTinyTestDecoder::N];
-        for el in &mut channel_output {
-            el[MyTinyTestDecoder::b2i(0)] = 1.0;
+        let prior_secret: [FloatType; MyTinyTestDecoder::BSIZE] = [0.0625, 0.25, 0.375, 0.25, 0.0625];
+        let num_variables = 4;
+        let mut channel_output: Vec<Vec<FloatType>> = Vec::with_capacity(num_variables);
+        for _ in 0..num_variables {
+            channel_output.push(prior_secret.to_vec());
         }
 
-        // Introduce an error
-        channel_output[1][MyTinyTestDecoder::b2i(0)] = 0.1;
-        channel_output[1][MyTinyTestDecoder::b2i(7)] = 0.9;
+        let channel_output_joint: Vec<Vec<FloatType>> = vec![
+            {
+                let mut cond_prob = vec![0.0; 25];
+                cond_prob[0] = 1.0; // corresponding to (-2, -2)
+                cond_prob
+            },
+            {
+                let mut cond_prob = vec![0.0; 25];
+                cond_prob[17] = 1.0; // corresponding to (0, 1)
+                cond_prob
+            },
+        ];
 
-        // Convert to LLR
         let channel_llr = MyTinyTestDecoder::into_llr(&channel_output);
+        let channel_llr_joint = MyTinyTestDecoder::into_llr(&channel_output_joint);
 
-        let res = decoder_6_3_4_3_gf16.min_sum(channel_llr).expect("Failed");
+        let res = decoder.min_sum(channel_llr, channel_llr_joint).expect("Failed");
 
-        let expected: [i8; 6] = [0; 6];
+        let expected: Vec<i8> = vec![-2, -2, 0, 1];
 
-        assert_eq!(res, expected); */
+        assert_eq!(res, expected);
     }
 }
