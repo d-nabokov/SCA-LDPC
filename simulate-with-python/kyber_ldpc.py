@@ -169,7 +169,7 @@ def compute_information_of_configuration(
             for j in range(xbits):
                 coding_joint[i][j + coding_offset] = coding_for_check_dict[s_subset][j]
         coding_offset += xbits
-    # print_coding(coding_joint, weight=variables)
+    print_coding(coding_joint, weight=variables)
 
     cond_prob_all, pr_of_y = s_distribution_for_all_y(
         pr_oracle,
@@ -178,6 +178,7 @@ def compute_information_of_configuration(
         lambda s: secret_joint_prob(s, s_distr),
     )
     # print(cond_prob_all)
+    print(f"{pr_of_y=}; entropy is {entropy(pr_of_y)}")
 
     expected_info = 0
     for i, y in enumerate(it.product(range(2), repeat=len(coding_joint[0]))):
@@ -227,18 +228,19 @@ secret_indices = [(0, 1), (0, 2)]
 # variables = 6
 # secret_indices = [(0, 1), (0, 2), (0, 3), (1, 4), (1, 5), (2, 5)]
 
-pr_oracle = SimpleOracle(1)
+# pr_oracle = SimpleOracle(1)
+pr_oracle = SimpleOracle(0.9)
 
 best_info = 0
 best_indices = []
-# for indices in it.combinations(range(len(best_splits)), 2):
-#     print(indices)
-#     # splits = list([best_splits[i]] for i in indices)
-#     splits = [list(best_splits[i] for i in indices)]
+for indices in it.combinations(range(len(best_splits)), 2):
+    print(indices)
+    # splits = list([best_splits[i]] for i in indices)
+    splits = [list(best_splits[i] for i in indices)]
 
-for indices in it.product([(0, 7), (1, 2), (3, 5), (4, 6)], range(len(best_splits))):
-    splits = [list(best_splits[i] for i in indices[0])] + [[best_splits[indices[1]]]]
-    print(splits)
+    # for indices in it.product([(0, 7), (1, 2), (3, 5), (4, 6)], range(len(best_splits))):
+    #     splits = [list(best_splits[i] for i in indices[0])] + [[best_splits[indices[1]]]]
+    #     print(splits)
 
     expected_info = compute_information_of_configuration(
         splits, secret_indices, variables, pr_oracle
@@ -249,6 +251,7 @@ for indices in it.product([(0, 7), (1, 2), (3, 5), (4, 6)], range(len(best_split
     elif expected_info > best_info:
         best_info = expected_info
         best_indices = [indices]
+    break
 
 print(best_info)
 print(best_indices)
