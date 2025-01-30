@@ -18,6 +18,7 @@ use std::{
     mem::{self, transmute, MaybeUninit},
     ops::{Add, AddAssign, Range, RangeInclusive},
 };
+use logsumexp::{LogAddExp, LogSumExp};
 use log::debug;
 
 macro_rules! debug_unwrap {
@@ -294,7 +295,7 @@ type Container2D<T> = rustc_hash::FxHashMap<Key2D, T>;
 
 type ParCheckType = i8;
 
-/// Decoder that implements min_sum algorithm. 
+/// Decoder that implements belief propagation algorithm. 
 ///
 /// The generic arguments are:
 /// N: Number of variable nodes
@@ -342,6 +343,29 @@ fn insert_first_none<T>(array: &mut Vec<Option<T>>, value: T) {
         }
     }
     panic!("Reached the end of the array, no more space left!");
+}
+
+// Normalize log probabilities in-place so that exp(...) sums to 1
+fn normalize_log_probs(log_probs: &mut [FloatType]) {
+    let lse = log_probs.iter().ln_sum_exp();
+    for lp in log_probs.iter_mut() {
+        *lp -= lse;
+    }
+}
+
+fn check_all_finite_assert<const Q: usize>(
+    llrs: &[QaryLlrs<Q>],
+    name: &str,
+) {
+    for (i, qllr) in llrs.iter().enumerate() {
+        for (j, &val) in qllr.0.iter().enumerate() {
+            assert!(
+                val.is_finite(),
+                "Found non-finite value in {} at index ({}, {}): {}",
+                name, i, j, val
+            );
+        }
+    }
 }
 
 impl<
@@ -494,6 +518,7 @@ where
         let mut it = 0;
         'decoding: loop {
             it += 1;
+            println!("Iteration start");
             // 1. Parity check: Compute the syndrome based on the hard_decision
             // noop, we use only num iterations instead
             // 2. check num iterations
@@ -518,6 +543,7 @@ where
                     .unwrap();
 
                 // ::log::info!("alpha_i {:?}, alpha_ij_sum = {:?}", alpha_i, alpha_ij_sum);
+                println!("alpha_i {:?}, alpha_ij_sum = {:?}", alpha_i, alpha_ij_sum);
 
                 let mut beta_i = vec![QaryLlrs::<BSIZE>([FloatType::INFINITY; BSIZE]); SW];
                 let mut beta_ij_sum = QaryLlrs::<BSUMSIZE>([FloatType::INFINITY; BSUMSIZE]);
@@ -550,12 +576,13 @@ where
                 }
 
                 let mut check_iter = check.variables(check_idx);
-                for (key, beta_ij) in check_iter.by_ref().take(num_variable_nodes).zip(beta_i) {
-                    debug_unwrap!(edges.get_mut(&key)).c2v.replace(beta_ij);
+                for (key, beta_ij) in check_iter.by_ref().take(num_variable_nodes).zip(&beta_i) {
+                    debug_unwrap!(edges.get_mut(&key)).c2v.replace(*beta_ij);
                 }
                 debug_unwrap!(edgessum.get_mut(&check_iter.next().unwrap())).c2v.replace(beta_ij_sum);
 
                 // ::log::info!("beta_i {:?}, beta_ij_sum = {:?}", beta_i, beta_ij_sum);
+                println!("beta_i {:?}, beta_ij_sum = {:?}", beta_i, beta_ij_sum);
             }
 
             // Variable node update (sum)
@@ -564,18 +591,23 @@ where
 
                 // 4.1 primitive messages. Full summation
                 let mut sum: QaryLlrs<BSIZE> = debug_unwrap!(var.channel);
+                println!("var_idx {:?}, channel = {:?}", var_idx, sum);
                 for key in var.checks(var_idx) {
                     let incoming = debug_unwrap!(debug_unwrap!(edges.get(&key)).c2v);
+                    println!("incoming {:?} (not multiplied by +-1)", incoming);
                     sum = sum.qary_add_with_mult_in_gf(incoming, self.parity_check[&key]);
                 }
+                println!("var_idx {:?}, sum = {:?}", var_idx, sum);
                 for key in var.checks(var_idx) {
                     // 4.2 primitive outgoing messages, subtract self for individual message
                     let edge = debug_unwrap!(edges.get_mut(&key));
                     let incoming = debug_unwrap!(edge.c2v);
                     let prim_out = sum.qary_sub_with_mult_in_gf(incoming, self.parity_check[&key]).mult_in_gf(self.parity_check[&key]);
+                    println!("var_idx {:?}, prim_out = {:?}", var_idx, prim_out);
                     // 5. Message normalization
                     let arg_min = Self::arg_min::<BSIZE>(prim_out);
                     let out = prim_out.qary_sub_arg(arg_min);
+                    println!("var_idx {:?}, out = {:?}", var_idx, out);
                     edge.v2c.replace(out);
                 }
 
@@ -610,6 +642,225 @@ where
         }
 
         Ok(hard_decision)
+    }
+
+
+    // Implements the sum product algorithm
+    // Uses standard scheduling, i.e. check‐node update, then variable‐node update
+    // 
+    // Note: the implementation can't handle impossible values, meaning that 
+    // channel_llr and channel_llr_sum should not contain -inf. That's because we
+    // always assume the algorithm will be used for the imperfect oracle
+    pub fn sum_product(&self, channel_llr: Vec<QaryLlrs<BSIZE>>, channel_llr_sum: Vec<QaryLlrs<BSUMSIZE>>) -> Result<Vec<BType>> {
+        check_all_finite_assert(&channel_llr, "channel_llr");
+        check_all_finite_assert(&channel_llr_sum, "channel_llr_sum");
+
+        // Clone the states that we need to mutate
+        let mut vn = self.vn.clone();
+        let mut vnsum = self.vnsum.clone();
+        let mut edges = self.edges.clone();
+        let mut edgessum = self.edgessum.clone();
+        let mut hard_decision = vec![BType::zero(); self.N];
+
+        let BVARS = self.N - self.R; // number of B-variables
+        let SW = self.DC - 1; // each check node has SW B-variables + 1 BSUM variable
+
+        // 1. Initialize the channel values (steps are based on http://tuk88.free.fr/LDPC/ldpcchap.pdf)
+        for (var_idx, (v, m)) in (0..).zip(vn.iter_mut().zip(channel_llr)) {
+            v.channel = Some(m);
+            // For each check node connected to var_idx, copy prior distribution `m` into edges[..].v2c
+            for key in v.checks(var_idx) {
+                // We assume that only plus or minus ones are present in the parity check matrix
+                debug_unwrap!(edges.get_mut(&key)).v2c.insert(m.mult_in_gf(self.parity_check[&key]));
+            }
+        }
+        // Similarly for sum variables; note: var_idx starts NOT from 0
+        for (var_idx, (v, m)) in ((BVARS as u16)..).zip(vnsum.iter_mut().zip(channel_llr_sum)) {
+            v.channel = Some(m);
+            for key in v.checks(var_idx) {
+                debug_unwrap!(edgessum.get_mut(&key)).v2c.insert(m.mult_in_gf(self.parity_check[&key]));
+            }
+        }
+
+        let mut it = 0;
+        'decoding: loop {
+            it += 1;
+            println!("Iteration {} start:", it);
+
+            // 2. Check node update (messages check -> variable)
+            // For each check node, we gather the v2c messages from B-variables (alpha_i)
+            //  + from the one BSUM variable (alpha_ij_sum)
+            // Then we enumerate all possible configurations
+            'check_update: for (check_idx, check) in (0..).zip(&*self.cn) {
+                // Check nodes in cn are a list of values followed by some amount (potentially 0) of Nones
+                // since the code is not generally regular. We assume check matrix is built as H||I,
+                // therefore, for all check nodes the last non-None value corresponds to I, i.e. check value 
+                let num_nones = check.variable_idx.iter().rev().take_while(|&&x| x.is_none()).count();
+                let num_variable_nodes = SW - num_nones;
+
+                let mut check_iter = check.variables(check_idx);
+                let alpha_i: Vec<&QaryLlrs<BSIZE>> = check_iter
+                    .by_ref()
+                    .take(num_variable_nodes)
+                    .map(|key| debug_unwrap!(&edges[&key].v2c.as_ref()))
+                    .collect();
+                let alpha_ij_sum: &QaryLlrs<BSUMSIZE> = check_iter
+                    .map(|key| debug_unwrap!(&edgessum[&key].v2c.as_ref()))
+                    .next()
+                    .unwrap();
+
+                // ::log::info!("alpha_i {:?}, alpha_ij_sum = {:?}", alpha_i, alpha_ij_sum);
+                println!("alpha_i {:?}, alpha_ij_sum = {:?}", alpha_i, alpha_ij_sum);
+
+                // New c2v messages
+                let mut beta_i = vec![QaryLlrs::<BSIZE>([FloatType::NEG_INFINITY; BSIZE]); SW];
+                let mut beta_ij_sum = QaryLlrs::<BSUMSIZE>([FloatType::NEG_INFINITY; BSUMSIZE]);
+
+                // println!("(init) beta_i {:?}, beta_ij_sum = {:?}", beta_i, beta_ij_sum);
+                // ::log::info!("beta_i {:?}, beta_ij_sum = {:?}", beta_i, beta_ij_sum);
+                
+                let mut d_values_iter = SimpleDValueIterator::<BType>::new(BType::from(B).unwrap(), num_nones, SW);
+                while let Some(d_values) = d_values_iter.next() {
+                    let mut d_value_sum = BType::zero();
+                    for d in d_values.iter() {
+                        d_value_sum += *d;
+                    }
+                    d_value_sum = -d_value_sum;
+
+                    let mut sum_of_alpha: FloatType = alpha_i
+                        .iter()
+                        .zip(d_values)
+                        .map(|(alpha_ij, d)| {
+                            alpha_ij.0[Self::b2i::<B>(*d)]
+                        })
+                        .sum();
+                    let d_idx_sum = Self::b2i::<BSUM>(d_value_sum);
+                    // println!("d_sum = {:?} -> index {:?}", d_value_sum, d_idx_sum);
+                    sum_of_alpha += alpha_ij_sum.0[d_idx_sum];
+
+                    for ((beta_ij, d), alpha_ij) in beta_i.iter_mut().zip(d_values).zip(&alpha_i) {
+                        let d_idx = Self::b2i::<B>(*d);
+                        let c2v_value = sum_of_alpha - alpha_ij.0[d_idx];
+                        // println!("(beta_ij{:?}): {:?} + {:?} = {:?}", d_idx, beta_ij.0[d_idx], c2v_value, beta_ij.0[d_idx].ln_add_exp(c2v_value));
+                        beta_ij.0[d_idx] = beta_ij.0[d_idx].ln_add_exp(c2v_value);
+                    }
+                    let c2v_value = sum_of_alpha - alpha_ij_sum.0[d_idx_sum];
+                    // println!("alpha_ij_sum.0[{:?}] = {:?}; {:?} - {:?} = {:?}", d_idx_sum, alpha_ij_sum.0[d_idx_sum], sum_of_alpha, alpha_ij_sum.0[d_idx_sum], c2v_value);
+                    // println!("(beta_ij_sum{:?}): {:?} + {:?} = {:?}", d_idx_sum, beta_ij_sum.0[d_idx_sum], c2v_value, beta_ij_sum.0[d_idx_sum].ln_add_exp(c2v_value));
+                    beta_ij_sum.0[d_idx_sum] = beta_ij_sum.0[d_idx_sum].ln_add_exp(c2v_value);
+                }
+                println!("(before normalization) beta_i {:?}, beta_ij_sum = {:?}", beta_i, beta_ij_sum);
+
+                for beta_ij in &mut beta_i[0..num_variable_nodes] {
+                    normalize_log_probs(&mut beta_ij.0);
+                }
+                normalize_log_probs(&mut beta_ij_sum.0);
+
+                // println!("(after normalization) beta_i {:?}, beta_ij_sum = {:?}", beta_i, beta_ij_sum);
+
+                let mut check_iter = check.variables(check_idx);
+                for (key, beta_ij) in check_iter.by_ref().take(num_variable_nodes).zip(&beta_i) {
+                    debug_unwrap!(edges.get_mut(&key)).c2v.replace(*beta_ij);
+                }
+                debug_unwrap!(edgessum.get_mut(&check_iter.next().unwrap())).c2v.replace(beta_ij_sum);
+
+                // ::log::info!("beta_i {:?}, beta_ij_sum = {:?}", beta_i, beta_ij_sum);
+                println!("beta_i {:?}, beta_ij_sum = {:?}", beta_i, beta_ij_sum);
+            }
+
+            // 3. Variable node update (messages variable -> check)
+            // summation in log domain => add the channel + all c2v, then exclude self for each outgoing v2c.
+            for (var_idx, var) in (0..).zip(&*vn) {
+                // Collect connected checks
+
+                // 4. primitive messages. Full summation
+                let mut sum: QaryLlrs<BSIZE> = debug_unwrap!(var.channel);
+                println!("var_idx {:?}, channel = {:?}", var_idx, sum);
+                for key in var.checks(var_idx) {
+                    let incoming = debug_unwrap!(debug_unwrap!(edges.get(&key)).c2v);
+                    println!("incoming {:?} (not multiplied by +-1)", incoming);
+                    sum = sum.qary_add_with_mult_in_gf(incoming, self.parity_check[&key]);
+                }
+                println!("var_idx {:?}, sum = {:?}", var_idx, sum);
+                for key in var.checks(var_idx) {
+                    // 3. primitive outgoing messages, subtract self for individual message
+                    let edge = debug_unwrap!(edges.get_mut(&key));
+                    let incoming = debug_unwrap!(edge.c2v);
+                    let mut prim_out = sum.qary_sub_with_mult_in_gf(incoming, self.parity_check[&key]).mult_in_gf(self.parity_check[&key]);
+                    println!("var_idx {:?}, prim_out = {:?}", var_idx, prim_out);
+                    // message normalization
+                    normalize_log_probs(&mut prim_out.0);
+                    println!("var_idx {:?}, out = {:?}", var_idx, prim_out);
+                    edge.v2c.replace(prim_out);
+                }
+
+                if it >= self.max_iter {
+                    // 5. Tentative decision
+                    hard_decision[var_idx as usize] = Self::i2b::<B>(Self::arg_max::<BSIZE>(sum));
+                }
+            }
+            for (var_idx, var) in ((BVARS as u16)..).zip(&*vnsum) {
+                let mut sum: QaryLlrs<BSUMSIZE> = debug_unwrap!(var.channel);
+                println!("(sum) var_idx {:?}, channel = {:?}", var_idx, sum);
+                for key in var.checks(var_idx) {
+                    let incoming = debug_unwrap!(debug_unwrap!(edgessum.get(&key)).c2v);
+                    println!("incoming {:?} (not multiplied by +-1)", incoming);
+                    sum = sum.qary_add_with_mult_in_gf(incoming, self.parity_check[&key]);
+                }
+                println!("var_idx {:?}, sum = {:?}", var_idx, sum);
+                // Here because the part of the matrix corresponding to BSUM variables
+                // is essentially identity matrix, there is only one check node leading
+                // to it. This means that outgoing message from BSUM is always just
+                // the channel
+
+                if it >= self.max_iter {
+                    hard_decision[var_idx as usize] = Self::i2b::<BSUM>(Self::arg_max::<BSUMSIZE>(sum));
+                }
+            }
+
+            if it >= self.max_iter {
+                break 'decoding;
+            }
+        }
+
+        Ok(hard_decision)
+    }
+
+    // Convert channel_output probabilities into (shifted) log probabilities.
+    //
+    // Returns a vector in log domain, where the largest probability
+    //   in each vector is mapped to 0.0, and zero-probabilities become -∞.
+    //
+    // This is appropriate for sum-product decoding.
+    pub fn into_log_domain<const T: usize>(channel_output: &Vec<Vec<FloatType>>) -> Vec<QaryLlrs<T>> {
+        const EPSILON: FloatType = 0.001;
+        let mut llrs: Vec<QaryLlrs<T>> = vec![QaryLlrs::<T>([0.0; T]); channel_output.len()];
+
+        for (var, msg) in channel_output.iter().zip(llrs.iter_mut()) {
+            let sum: FloatType = var.iter().sum();
+            assert!((1.0 - EPSILON..=1.0 + EPSILON).contains(&sum),
+                "Probabilities must sum to ~1.0; got {}", sum);
+            let max = var
+                .iter()
+                .copied()
+                // ignore NAN values (errors from the previous line)
+                .flat_map(NotNan::new)
+                .max()
+                .map(NotNan::into_inner)
+                .expect("No maximum probability found");
+
+            // convert each probability p to log-domain:
+            //    log( p / max ) if p > 0, else -∞
+            for (p, dst) in var.iter().zip(msg.0.iter_mut()) {
+                if *p <= 0.0 {
+                    *dst = FloatType::NEG_INFINITY;
+                } else {
+                    *dst = (*p / max).ln();
+                }
+            }
+        }
+
+        llrs
     }
 
     pub fn into_llr<const T: usize>(channel_output: &Vec<Vec<FloatType>>) -> Vec<QaryLlrs<T>> {
@@ -650,6 +901,18 @@ where
         min_arg
     }
 
+    fn arg_max<const T: usize>(m: QaryLlrs<T>) -> usize {
+        let mut max_val = FloatType::NEG_INFINITY;
+        let mut max_arg = 0;
+        for (arg, val) in m.0.iter().copied().enumerate() {
+            if val > max_val {
+                max_val = val;
+                max_arg = arg;
+            }
+        }
+        max_arg
+    }
+
     pub fn i2b<const T: usize>(i: usize) -> BType {
         let i: isize = i.try_into().unwrap();
         let b: isize = T.try_into().unwrap();
@@ -682,62 +945,170 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::*;
 
     #[test]
-    fn into_llr() {
-        /* let channel_output = [[
-            0.0, 0.0, 0.0, 0.0, 0.14, 0.14, 0.14, 0.14, 0.14, 0.14, 0.14, 0.02, 0.0, 0.0, 0.0,
-        ]; MyTinyTestDecoder::N];
-        let llr = MyTinyTestDecoder::into_llr(&channel_output);
-        let expected = [QaryLlrs([
-            FloatType::INFINITY,
-            FloatType::INFINITY,
-            FloatType::INFINITY,
-            FloatType::INFINITY,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            //1.9459101490553135,
-            1.945_910_1,
-            FloatType::INFINITY,
-            FloatType::INFINITY,
-            FloatType::INFINITY,
-        ]); MyTinyTestDecoder::N];
-        assert_eq!(expected, llr); */
+    fn system_of_equations_3_coefficients() {
+        type TernaryW2Decoder = DecoderSpecial<1, 3, 2, 5, i8>;
+        println!("system_of_equations_3_coefficients begin!");
+        let mut parity_check = vec![
+            vec![1, 1, 0],
+            vec![1, 0, 1],
+            vec![0, 1, 1],
+        ];
+
+        // Append negative identity matrix to the right
+        let num_variables = parity_check.len();
+        for (i, row) in parity_check.iter_mut().enumerate() {
+            row.extend((0..num_variables).map(|j| if i == j { -1 } else { 0 }));
+        }
+
+        let DV = 2;
+        let DC = 3;
+        let iterations = 4;
+        let decoder = TernaryW2Decoder::new(parity_check.clone(), DV, DC, iterations);
+
+        // NTRU distribution
+        // let prior_secret: Vec<FloatType> = vec![85.0 / 256.0, 86.0 / 256.0, 85.0 / 256.0];
+        let prior_secret: Vec<FloatType> = vec![1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0];
+        let mut channel_output: Vec<Vec<FloatType>> = Vec::with_capacity(num_variables);
+        for _ in 0..num_variables {
+            channel_output.push(prior_secret.clone());
+        }
+        // channel_output[0][0] = 1.;
+        // channel_output[0][1] = 0.;
+        // channel_output[0][2] = 0.;
+
+        let f = vec![0, 0, 0];
+
+        let mut channel_output_sum: Vec<Vec<FloatType>> = Vec::new();
+        for row in &parity_check {
+            let dot_product: i8 = row.iter().take(num_variables).zip(&f).map(|(a, b)| a * b).sum();
+            let mut cond_prob = vec![0.0; TernaryW2Decoder::BSUMSIZE];
+            cond_prob[dot_product as usize + TernaryW2Decoder::BSUM as usize] = 1.0;
+            channel_output_sum.push(cond_prob);
+        }
+        // let cond_prob00 : Vec<FloatType> = vec![0.015748838182594985, 0.03186823726360397, 0.904765849107602, 0.03186823726360397, 0.015748838182594985];
+        // for _ in 0..num_variables {
+        //     channel_output_sum.push(cond_prob00.clone());
+        // }
+
+        let channel_llr = TernaryW2Decoder::into_llr(&channel_output);
+        let channel_llr_sum = TernaryW2Decoder::into_llr(&channel_output_sum);
+
+        let res = decoder.min_sum(channel_llr, channel_llr_sum).expect("Failed");
+
+        assert_eq!(res[..num_variables], f);
+        assert!(1 == 0);
     }
 
     #[test]
-    fn it_works() {
-/*         let decoder_6_3_4_3_gf16 = MyTinyTestDecoder::new(
-            [
-                [true, true, true, true, false, false],
-                [false, false, true, true, false, true],
-                [true, false, false, true, true, false],
-            ],
-            10,
-        );
+    fn system_of_equations_weight_3() {
+        type TestDecoder = DecoderSpecial<1, 3, 3, 7, i8>;
+        println!("system_of_equations_weight_3 begin!");
+        let mut parity_check = vec![
+            vec![1, 1, 1],
+            // vec![1, 1, 0],
+        ];
 
-        // Zero message with zero noise
-        let mut channel_output = [[0.0; MyTinyTestDecoder::Q]; MyTinyTestDecoder::N];
-        for el in &mut channel_output {
-            el[MyTinyTestDecoder::b2i(0)] = 1.0;
+        let num_checks = parity_check.len();
+        let num_variables = parity_check[0].len();
+        // Append negative identity matrix to the right
+        for (i, row) in parity_check.iter_mut().enumerate() {
+            row.extend((0..num_checks).map(|j| if i == j { -1 } else { 0 }));
         }
 
-        // Introduce an error
-        channel_output[1][MyTinyTestDecoder::b2i(0)] = 0.1;
-        channel_output[1][MyTinyTestDecoder::b2i(7)] = 0.9;
+        let DV = 2;
+        let DC = 4;
+        let iterations = 2;
+        let decoder = TestDecoder::new(parity_check.clone(), DV, DC, iterations);
 
-        // Convert to LLR
-        let channel_llr = MyTinyTestDecoder::into_llr(&channel_output);
+        // NTRU distribution
+        let prior_secret: Vec<FloatType> = vec![85.0 / 256.0, 86.0 / 256.0, 85.0 / 256.0];
+        // let prior_secret: Vec<FloatType> = vec![1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0];
+        let mut channel_output: Vec<Vec<FloatType>> = Vec::with_capacity(num_variables);
+        for _ in 0..num_variables {
+            channel_output.push(prior_secret.clone());
+        }
 
-        let res = decoder_6_3_4_3_gf16.min_sum(channel_llr).expect("Failed");
+        let f = vec![1, 1, 0];
 
-        let expected: [i8; 6] = [0; 6];
+        let mut channel_output_sum: Vec<Vec<FloatType>> = Vec::new();
+        for row in &parity_check {
+            let dot_product: i8 = row.iter().take(num_variables).zip(&f).map(|(a, b)| a * b).sum();
+            let mut cond_prob = vec![0.01; TestDecoder::BSUMSIZE];
+            cond_prob[dot_product as usize + TestDecoder::BSUM as usize] = 1.0 - 0.01 * ((TestDecoder::BSUMSIZE - 1) as FloatType);
+            channel_output_sum.push(cond_prob);
+        }
 
-        assert_eq!(res, expected); */
+        let channel_llr = TestDecoder::into_log_domain(&channel_output);
+        let channel_llr_sum = TestDecoder::into_log_domain(&channel_output_sum);
+
+        let res = decoder.sum_product(channel_llr, channel_llr_sum).expect("Failed");
+
+        assert_eq!(res[..num_variables], f);
+        assert!(1 == 0);
+    }
+
+
+    #[test]
+    fn system_of_equations_9_coefficients() {
+        type TernaryW3Decoder = DecoderSpecial<1, 3, 3, 7, i8>;
+        println!("system_of_equations_9_coefficients begin!");
+        let mut parity_check = vec![
+            vec![1, 1, 1, 0, 0, 0, 0, 0, 0],
+            vec![0, 0, 0, 1, 1, 1, 0, 0, 0],
+            vec![0, 0, 0, 0, 0, 0, 1, 1, 1],
+            vec![1, 0, 0, 1, 0, 0, 1, 0, 0],
+            vec![0, 1, 0, 0, 1, 0, 0, 1, 0],
+            vec![0, 0, 1, 0, 0, 1, 0, 0, 1],
+            vec![1, 0, 0, 0, 1, 0, 0, 0, 1],
+            vec![0, 1, 0, 1, 0, 0, 0, 0, 1],
+            vec![0, 1, 0, 0, 0, 1, 1, 0, 0],
+        ];
+
+        // Append negative identity matrix to the right
+        let num_variables = parity_check.len();
+        for (i, row) in parity_check.iter_mut().enumerate() {
+            row.extend((0..num_variables).map(|j| if i == j { -1 } else { 0 }));
+        }
+
+        let DV = 4;
+        let DC = 4;
+        let iterations = 6;
+        let decoder = TernaryW3Decoder::new(parity_check.clone(), DV, DC, iterations);
+
+        // NTRU distribution
+        // let prior_secret: Vec<FloatType> = vec![85.0 / 256.0, 86.0 / 256.0, 85.0 / 256.0];
+        let prior_secret: Vec<FloatType> = vec![1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0];
+        let mut channel_output: Vec<Vec<FloatType>> = Vec::with_capacity(num_variables);
+        for _ in 0..num_variables {
+            channel_output.push(prior_secret.clone());
+        }
+        // channel_output[0][0] = 1.;
+        // channel_output[0][1] = 0.;
+        // channel_output[0][2] = 0.;
+
+        let f = vec![1, 1, 0, 0, 0, 0, 0, 0, 0];
+
+        let mut channel_output_sum: Vec<Vec<FloatType>> = Vec::new();
+        for row in &parity_check {
+            let dot_product: i8 = row.iter().take(num_variables).zip(&f).map(|(a, b)| a * b).sum();
+            let mut cond_prob = vec![0.0; TernaryW3Decoder::BSUMSIZE];
+            cond_prob[dot_product as usize + TernaryW3Decoder::BSUM as usize] = 1.0;
+            channel_output_sum.push(cond_prob);
+        }
+        // let cond_prob00 : Vec<FloatType> = vec![0.015748838182594985, 0.03186823726360397, 0.904765849107602, 0.03186823726360397, 0.015748838182594985];
+        // for _ in 0..num_variables {
+        //     channel_output_sum.push(cond_prob00.clone());
+        // }
+
+        let channel_llr = TernaryW3Decoder::into_llr(&channel_output);
+        let channel_llr_sum = TernaryW3Decoder::into_llr(&channel_output_sum);
+
+        let res = decoder.min_sum(channel_llr, channel_llr_sum).expect("Failed");
+
+        assert_eq!(res[..num_variables], f);
+        assert!(1 == 0);
     }
 }
