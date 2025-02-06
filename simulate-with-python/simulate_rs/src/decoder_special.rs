@@ -909,8 +909,7 @@ where
             
         }
 
-        println!("FINAL DECISION");
-
+        // println!("FINAL DECISION");
         for (var_idx, var) in (0..).zip(&*vn) {
             let mut sum: QaryLlrs<BSIZE> = debug_unwrap!(var.channel);
             for key in var.checks(var_idx) {
@@ -919,8 +918,7 @@ where
             }
 
             hard_decision[var_idx as usize] = Self::i2b::<B>(Self::arg_max::<BSIZE>(sum));
-
-            println!("var {:?}: {:?} -> {:?}", var_idx, sum, hard_decision[var_idx as usize]);
+            // println!("var {:?}: {:?} -> {:?}", var_idx, sum, hard_decision[var_idx as usize]);
         }
 
         Ok(hard_decision)

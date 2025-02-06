@@ -65,14 +65,14 @@ if len(argv) < 3:
     print("Usage: <program> <prob_file> <out_file> [<LDPC_iterations>]")
     exit()
 
-iterations = 5
+iterations = 10000
 if len(argv) >= 4:
     iterations = int(argv[3])
 # number of coefficients of f
 p = 761
 # weight of f
 w = 286
-check_weight = 4
+check_weight = 2
 
 # read posterior distribution of check variables
 filename = argv[1]
@@ -86,9 +86,9 @@ max_row_weight = np.max(row_counts)
 col_counts = np.count_nonzero(H, axis=0)
 max_col_weight = np.max(col_counts)
 
-print(len(H), len(H[0]))
-print(max_row_weight, max_col_weight)
-print(f"min={np.min(col_counts)}; variance = {np.var(col_counts)}")
+# print(len(H), len(H[0]))
+# print(max_row_weight, max_col_weight)
+# print(f"min={np.min(col_counts)}; variance = {np.var(col_counts)}")
 
 # determine the prior distribution of coefficients of f
 f_zero_prob = (p - w) / p
@@ -129,9 +129,8 @@ elif check_weight == 6:
 else:
     raise ValueError("Not supported check weight")
 # print("Decoder created, computing min_sum")
-s_decoded = decoder.min_sum(secret_variables, check_variables)
+s_decoded = decoder.decode(secret_variables, check_variables)
 # print("Done")
 
 with open(argv[2], "wt") as f:
-    print(s_decoded[:p], file=f)
-    print(s_decoded[p:], file=f)
+    print(s_decoded, file=f)
