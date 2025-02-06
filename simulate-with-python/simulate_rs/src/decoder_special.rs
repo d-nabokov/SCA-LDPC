@@ -664,7 +664,7 @@ where
             .unwrap();
 
         // ::log::info!("alpha_i {:?}, alpha_ij_sum = {:?}", alpha_i, alpha_ij_sum);
-        println!("alpha_i {:?}, alpha_ij_sum = {:?}", alpha_i, alpha_ij_sum);
+        // println!("alpha_i {:?}, alpha_ij_sum = {:?}", alpha_i, alpha_ij_sum);
 
         // New c2v messages
         let mut beta_i = vec![QaryLlrs::<BSIZE>([FloatType::NEG_INFINITY; BSIZE]); num_variable_nodes];
