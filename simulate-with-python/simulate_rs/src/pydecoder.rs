@@ -137,6 +137,33 @@ macro_rules! register_py_decoder_special_class {
                     self.decoder.min_sum(channel_llr, channel_llr_sum)
                 })
             }
+
+            /// sum product algorithm
+            fn decode(&self, py: Python<'_>, py_channel_output: PyReadonlyArray2<FloatType>, py_channel_output_sum: PyReadonlyArray2<FloatType>) -> Result<Vec<i8>> {
+                let py_channel_output = py_channel_output.as_array();
+                let py_channel_output_sum = py_channel_output_sum.as_array();
+                let R = py_channel_output_sum.dim().0;
+                let SV = py_channel_output.dim().0;
+                py.allow_threads(||{
+                    let mut channel_output: Vec<Vec<FloatType>> = vec![vec![0.0; 2 * $B + 1]; SV];
+                    let mut channel_output_sum: Vec<Vec<FloatType>> = vec![vec![0.0; 2 * $BSUM + 1]; R];
+
+                    for (variable, output_row) in channel_output.iter_mut().enumerate() {
+                        for (value, output_value) in output_row.iter_mut().enumerate() {
+                            *output_value = py_channel_output[(variable, value)].into();
+                        }
+                    }
+
+                    for (variable, output_sum_row) in channel_output_sum.iter_mut().enumerate() {
+                        for (value, output_sum_value) in output_sum_row.iter_mut().enumerate() {
+                            *output_sum_value = py_channel_output_sum[(variable, value)].into();
+                        }
+                    }
+                    let channel_llr = CustomDecoder::into_log_domain(&channel_output);
+                    let channel_llr_sum = CustomDecoder::into_log_domain(&channel_output_sum);
+                    self.decoder.sum_product_nw(channel_llr, channel_llr_sum)
+                })
+            }
         }
 
         $m.add_class::<$Name>()?;
