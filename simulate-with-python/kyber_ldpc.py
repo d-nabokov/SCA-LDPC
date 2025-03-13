@@ -169,7 +169,7 @@ def compute_information_of_configuration(
             for j in range(xbits):
                 coding_joint[i][j + coding_offset] = coding_for_check_dict[s_subset][j]
         coding_offset += xbits
-    print_coding(coding_joint, weight=variables)
+    # print_coding(coding_joint, weight=variables)
 
     cond_prob_all, pr_of_y = s_distribution_for_all_y(
         pr_oracle,
@@ -179,6 +179,7 @@ def compute_information_of_configuration(
     )
     # print(cond_prob_all)
     print(f"{pr_of_y=}; entropy is {entropy(pr_of_y)}")
+    # print(f"H(Y) - 2 H(p) = {entropy(pr_of_y) - 2 * (1 - bsc_entropy)}")
 
     expected_info = 0
     for i, y in enumerate(it.product(range(2), repeat=len(coding_joint[0]))):
@@ -221,22 +222,36 @@ best_splits = [
     ([3, 2], [1, 5], [">=", ">="], 131 / 256, 0.0117187500000000),
 ]
 
-variables = 3
+variables = 2
 # secret_indices = [(0, 1), (0, 2), (1, 2)]
-secret_indices = [(0, 1), (0, 2)]
+secret_indices = [(0, 1)]
 
 # variables = 6
 # secret_indices = [(0, 1), (0, 2), (0, 3), (1, 4), (1, 5), (2, 5)]
 
-# pr_oracle = SimpleOracle(1)
-pr_oracle = SimpleOracle(0.9)
+# p = 1
+p = 0.9
+pr_oracle = SimpleOracle(p)
+
+bsc_entropy = 1 - entropy([p, 1 - p])
+print(f"H(p) = {1 - bsc_entropy}")
+print(f"upper bound on information: {bsc_entropy} per call; total = {bsc_entropy * 2}")
+
+# splits = [best_splits[0:1]]
+# expected_info = compute_information_of_configuration(
+#     splits, secret_indices, variables, pr_oracle
+# )
+# print(f"Expected information is {expected_info}")
+# print(131 / 256)
+# exit()
 
 best_info = 0
 best_indices = []
 for indices in it.combinations(range(len(best_splits)), 2):
-    print(indices)
+    print(f"{indices=}")
     # splits = list([best_splits[i]] for i in indices)
     splits = [list(best_splits[i] for i in indices)]
+    # splits = [splits[0] * 3]
 
     # for indices in it.product([(0, 7), (1, 2), (3, 5), (4, 6)], range(len(best_splits))):
     #     splits = [list(best_splits[i] for i in indices[0])] + [[best_splits[indices[1]]]]
@@ -245,7 +260,7 @@ for indices in it.combinations(range(len(best_splits)), 2):
     expected_info = compute_information_of_configuration(
         splits, secret_indices, variables, pr_oracle
     )
-    print(f"Expected information is {expected_info}")
+    # print(f"Expected information is {expected_info}")
     if abs(expected_info - best_info) < 0.000001:
         best_indices.append(indices)
     elif expected_info > best_info:
@@ -253,6 +268,7 @@ for indices in it.combinations(range(len(best_splits)), 2):
         best_indices = [indices]
     break
 
+print("best info:")
 print(best_info)
 print(best_indices)
 exit()
