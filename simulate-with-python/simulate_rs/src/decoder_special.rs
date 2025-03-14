@@ -114,7 +114,7 @@ fn min_max<I: PartialOrd>(in1: I, in2: I) -> (I, I) {
 
 impl<const Q: usize> QaryLlrs<Q> {
     // q-ary'ily Add self with term
-    fn qary_add(&self, term: Self) -> Self {
+    fn qary_add(&self, term: &Self) -> Self {
         let mut ret = Self([FloatType::INFINITY; Q]);
         for q in 0..Q {
             ret.0[q] = self.0[q] + term.0[q];
@@ -123,7 +123,7 @@ impl<const Q: usize> QaryLlrs<Q> {
     }
 
     // q-ary'ily Subtract self with subtrahend
-    fn qary_sub(&self, subtrahend: Self) -> Self {
+    fn qary_sub(&self, subtrahend: &Self) -> Self {
         let mut ret = Self([FloatType::INFINITY; Q]);
         for q in 0..Q {
             ret.0[q] = self.0[q] - subtrahend.0[q];
@@ -151,7 +151,7 @@ impl<const Q: usize> QaryLlrs<Q> {
     }
 
     // q-ary'ily Add self with term multiplied by hij
-    fn qary_add_with_mult_in_gf(&self, term: Self, hij: i8) -> Self {
+    fn qary_add_with_mult_in_gf(&self, term: &Self, hij: i8) -> Self {
         let mut ret = Self([FloatType::INFINITY; Q]);
         if hij > 0 {
             for q in 0..Q {
@@ -166,7 +166,7 @@ impl<const Q: usize> QaryLlrs<Q> {
     }
 
     // q-ary'ily Subtract self with term multiplied by hij
-    fn qary_sub_with_mult_in_gf(&self, subtrahend: Self, hij: i8) -> Self {
+    fn qary_sub_with_mult_in_gf(&self, subtrahend: &Self, hij: i8) -> Self {
         let mut ret = Self([FloatType::INFINITY; Q]);
         if hij > 0 {
             for q in 0..Q {
@@ -291,48 +291,215 @@ where
 }
 
 type Container2D<T> = rustc_hash::FxHashMap<Key2D, T>;
-//type Container2D<T> = HashMap<Key2D, T>;
 
 type ParCheckType = i8;
 
-/// Decoder that implements belief propagation algorithm. 
-///
-/// The generic arguments are:
-/// N: Number of variable nodes
-/// R: Number of check nodes
-/// BVARS: Number of B-variables, must be equal to N-R
-/// DC: Maximum check node degree (num variables, per check)
-/// DV: Maximum variable node degree (num checks, per variable)
-/// B: first N-R variables from the range [-B, ..., 0, ..., B]
-/// BSIZE: size of range [-B, ..., 0, ..., B], i.e. 2*B+1
-/// BSUM: last R variables from the range [-BSUM, ..., 0, ..., BSUM]
-/// BSUMSIZE: size of range [-BSUM, ..., 0, ..., BSUM], i.e. 2*BSUM+1
-pub struct DecoderSpecial<
+pub trait IntegerLike:
+    Integer + Signed + NumCast + AddAssign + Copy + FromPrimitive + TryInto<usize> + Default + std::fmt::Debug
+{}
+
+impl<T> IntegerLike for T
+where
+    T: Integer + Signed + NumCast + AddAssign + Copy + FromPrimitive + TryInto<usize> + Default + std::fmt::Debug,
+{}
+
+pub trait CombinationOps<BType: IntegerLike> {
+    fn index_of_comb_val(val: BType, comb_weight: usize) -> usize;
+    fn index_of_comb(d_values: &[BType]) -> usize;
+
+    fn b2i<const T: usize>(val: BType) -> usize {
+        let mut val: isize = val.to_isize().unwrap();
+
+        (val + (T as isize)) as usize
+    }
+
+    fn i2b<const T: usize>(i: usize) -> BType {
+        let i: isize = i.try_into().unwrap();
+        let b: isize = T.try_into().unwrap();
+        let val = i - b;
+        if val > b || val < -b {
+            panic!("Value over-/underflow!");
+        }
+        BType::from(val).unwrap()
+    }
+}
+
+pub struct SumCombination<
+    BType: IntegerLike,
+    const B: usize,
+> {
+    b_type: PhantomData<BType>,
+}
+
+impl<
+    BType: IntegerLike,
+    const B: usize,
+> CombinationOps<BType> for SumCombination<BType, B>
+{
+    fn index_of_comb_val(val: BType, comb_weight: usize) -> usize {
+        let mut val: isize = val.to_isize().unwrap();
+
+        (val + (comb_weight * B) as isize) as usize
+    }
+
+    fn index_of_comb(d_values: &[BType]) -> usize {
+        let mut d_value_comb = BType::zero();
+        for d in d_values.iter() {
+            d_value_comb += *d;
+        }
+        d_value_comb = -d_value_comb;
+
+        Self::index_of_comb_val(d_value_comb, d_values.len())
+    }
+}
+
+pub struct JointCombination<
+    BType: IntegerLike,
     const B: usize,
     const BSIZE: usize,
-    const BSUM: usize,
-    const BSUMSIZE: usize,
-    BType: Integer + Signed,
+> {
+    b_type: PhantomData<BType>,
+}
+
+impl<
+    BType: IntegerLike,
+    const B: usize,
+    const BSIZE: usize,
+> CombinationOps<BType> for JointCombination<BType, B, BSIZE>
+{
+    fn index_of_comb_val(val: BType, comb_weight: usize) -> usize {
+        unimplemented!();
+    }
+
+    fn index_of_comb(d_values: &[BType]) -> usize {
+        let mut index = 0_usize;
+        let mut multiplier = 1_usize;
+
+        for &d in d_values {
+            index += Self::b2i::<B>(d) * multiplier;
+            multiplier *= BSIZE;
+        }
+
+        index
+    }
+}
+
+pub trait ParityCheckOps {
+    fn mult_by_parity<const SIZE: usize>(
+        incoming: &QaryLlrs<SIZE>,
+        check_val: ParCheckType,
+    ) -> QaryLlrs<SIZE>;
+
+    fn add_with_mult_by_parity<const SIZE: usize>(
+        lhs: &QaryLlrs<SIZE>,
+        rhs: &QaryLlrs<SIZE>,
+        check_val: ParCheckType,
+    ) -> QaryLlrs<SIZE>;
+
+    fn sub_with_mult_by_parity_then_mult<const SIZE: usize>(
+        lhs: &QaryLlrs<SIZE>,
+        rhs: &QaryLlrs<SIZE>,
+        check_val: ParCheckType,
+    ) -> QaryLlrs<SIZE>;
+}
+
+pub struct TernaryParityCheckOps;
+
+impl ParityCheckOps for TernaryParityCheckOps {
+    fn mult_by_parity<const SIZE: usize>(
+        incoming: &QaryLlrs<SIZE>,
+        check_val: ParCheckType,
+    ) -> QaryLlrs<SIZE> {
+        incoming.mult_in_gf(check_val)
+    }
+
+    fn add_with_mult_by_parity<const SIZE: usize>(
+        lhs: &QaryLlrs<SIZE>,
+        rhs: &QaryLlrs<SIZE>,
+        check_val: ParCheckType,
+    ) -> QaryLlrs<SIZE> {
+        lhs.qary_add_with_mult_in_gf(rhs, check_val)
+    }
+
+    fn sub_with_mult_by_parity_then_mult<const SIZE: usize>(
+        lhs: &QaryLlrs<SIZE>,
+        rhs: &QaryLlrs<SIZE>,
+        check_val: ParCheckType,
+    ) -> QaryLlrs<SIZE> {
+        Self::mult_by_parity(&lhs.qary_sub_with_mult_in_gf(rhs, check_val), check_val)
+    }
+}
+
+pub struct BinaryParityCheckOps;
+
+impl ParityCheckOps for BinaryParityCheckOps {
+    fn mult_by_parity<const SIZE: usize>(
+        incoming: &QaryLlrs<SIZE>,
+        check_val: ParCheckType,
+    ) -> QaryLlrs<SIZE> {
+        // since we only have 0 or 1, multiplication is always by 1, i.e. nothing happens
+        *incoming
+    }
+
+    fn add_with_mult_by_parity<const SIZE: usize>(
+        lhs: &QaryLlrs<SIZE>,
+        rhs: &QaryLlrs<SIZE>,
+        check_val: ParCheckType,
+    ) -> QaryLlrs<SIZE> {
+        lhs.qary_add(rhs)
+    }
+
+    fn sub_with_mult_by_parity_then_mult<const SIZE: usize>(
+        lhs: &QaryLlrs<SIZE>,
+        rhs: &QaryLlrs<SIZE>,
+        check_val: ParCheckType,
+    ) -> QaryLlrs<SIZE> {
+        lhs.qary_sub(rhs)
+    }
+}
+
+
+/// Decoder implementing belief propagation algorithm. 
+///
+/// The generic arguments are:
+/// B: first N-R variables from the range [-B, ..., 0, ..., B]
+/// BSIZE: size of range [-B, ..., 0, ..., B], i.e. 2*B+1
+/// COMB_SIZE: size of range of a combination of variables
+///
+/// Beside that, decoder is built from parity check matrix of size N \times R
+/// N: Number of variable nodes
+/// R: Number of check nodes
+/// DC: Maximum check node degree (num variables, per check)
+/// DV: Maximum variable node degree (num checks, per variable)
+pub struct DecoderSpecial<
+    C: CombinationOps<BType>,
+    P: ParityCheckOps,
+    const B: usize,
+    const BSIZE: usize,
+    const COMB_SIZE: usize,
+    BType: IntegerLike,
 > {
     /// Parity check matrix
     parity_check: Container2D<ParCheckType>,
     /// Messages between B-variables and check nodes
     edges: Container2D<Edge<BSIZE>>,
     /// Messages between BSUM-variables and check nodes
-    edgessum: Container2D<Edge<BSUMSIZE>>,
+    edges_comb: Container2D<Edge<COMB_SIZE>>,
     /// List of B-Variable nodes
     vn: Vec<VariableNode<BSIZE>>,
     /// List of BSUM-Variable nodes
-    vnsum: Vec<VariableNode<BSUMSIZE>>,
+    vn_comb: Vec<VariableNode<COMB_SIZE>>,
     /// List of Check nodes, each node contain DC-1 B-variables and 1 BSUM-variable
     cn: Vec<CheckNode>,
     /// Number of iterations to perform in the decoder    
     max_iter: u32,
-    brange: RangeInclusive<BType>,
     DV: usize,
     DC: usize,
     N: usize,
     R: usize,
+    combination_ops_type: PhantomData<C>,
+    parity_ops_type: PhantomData<P>,
+    b_type: PhantomData<BType>,
 }
 
 fn insert_first_none<T>(array: &mut Vec<Option<T>>, value: T) {
@@ -369,27 +536,23 @@ fn check_all_finite_assert<const Q: usize>(
 }
 
 impl<
-        const B: usize,
-        const BSIZE: usize,
-        const BSUM: usize,
-        const BSUMSIZE: usize,
-        BType,
-    > DecoderSpecial<B, BSIZE, BSUM, BSUMSIZE, BType>
-where
-// TODO: remove std::fmt::Debug
-    BType: Integer + Signed + NumCast + AddAssign + Copy + FromPrimitive + TryInto<usize> + Default + std::fmt::Debug,
-{
+    C: CombinationOps<BType>,
+    P: ParityCheckOps,
+    const B: usize,
+    const BSIZE: usize,
+    const COMB_SIZE: usize,
+    BType: IntegerLike,
+> DecoderSpecial<C, P, B, BSIZE, COMB_SIZE, BType> {
     pub const B: isize = B as isize;
     pub const BSIZE: usize = BSIZE;
-    pub const BSUM: isize = BSUM as isize;
-    pub const BSUMSIZE: usize = BSUMSIZE;
+    pub const COMB_SIZE: usize = COMB_SIZE;
 
-    pub fn new(parity_check: Vec<Vec<ParCheckType>>, DV: usize, DC: usize, max_iter: u32) -> Self {
-        if (BSUM % B) != 0 {
-            panic!(
-                "BSUM ({}) must be multiple of B ({})", BSUM, B
-            );
-        }
+    pub fn new(
+        parity_check: Vec<Vec<ParCheckType>>,
+        DV: usize,
+        DC: usize,
+        max_iter: u32,
+    ) -> Self {
         let R = parity_check.len();
         let N = parity_check[0].len();
         let BVARS = N - R;
@@ -398,7 +561,7 @@ where
             .map(|_| VariableNode::new(DV))
             .collect();
 
-        let mut vnsum: Vec<VariableNode<BSUMSIZE>> = (0..R)
+        let mut vn_comb: Vec<VariableNode<COMB_SIZE>> = (0..R)
             .map(|_| VariableNode::new(1))
             .collect();
 
@@ -406,20 +569,20 @@ where
             .map(|_| CheckNode::new(DC))
             .collect();
         let vn_ref = RefCell::new(vn);
-        let vnsum_ref = RefCell::new(vnsum);
+        let vn_comb_ref = RefCell::new(vn_comb);
         let cn_ref = RefCell::new(cn);
         let edges = RefCell::new(Container2D::default());
-        let edgessum = RefCell::new(Container2D::default());
+        let edges_comb = RefCell::new(Container2D::default());
 
         let parity_check: Container2D<ParCheckType> = parity_check
             .iter()
             .enumerate()
             .flat_map(|(row_num, row)| {
                 let vn = &vn_ref;
-                let vnsum = &vnsum_ref;
+                let vn_comb = &vn_comb_ref;
                 let cn = &cn_ref;
                 let edges = &edges;
-                let edgessum = &edgessum;
+                let edges_comb = &edges_comb;
                 row.iter()
                     .enumerate()
                     // Filter out zeroes in the parity check
@@ -428,13 +591,12 @@ where
                     .map(move |(col_num, &h)| {
                         let ij: Key2D = (row_num, col_num).into();
 
-                        
                         if col_num >= BVARS {
                             // This creates an empty edge (no message in either direction)
-                            edgessum.borrow_mut().insert(ij, Default::default());
+                            edges_comb.borrow_mut().insert(ij, Default::default());
                             // add the check index to the variable
                             insert_first_none(
-                                &mut vnsum.borrow_mut()[ij.col() - BVARS].check_idx,
+                                &mut vn_comb.borrow_mut()[ij.col() - BVARS].check_idx,
                                 ij.row,
                             );
                         } else {
@@ -457,63 +619,73 @@ where
             .collect();
 
         let mut vn = vn_ref.into_inner();
-        let mut vnsum = vnsum_ref.into_inner();
+        let mut vn_comb = vn_comb_ref.into_inner();
         let cn = cn_ref.into_inner();
         let edges = edges.into_inner();
-        let edgessum = edgessum.into_inner();
-
-        // ::log::info!("Decoder has the following parameters:\n vn={:?}\n\n\n vnsum={:?}\n\n\n cn={:?} \n\n\n edges={:?} \n\n\n edgessum={:?}", vn, vnsum, cn, edges, edgessum);
+        let edges_comb = edges_comb.into_inner();
 
         Self {
             parity_check,
             vn,
-            vnsum,
+            vn_comb,
             cn,
             edges,
-            edgessum,
+            edges_comb,
             max_iter,
-            brange: ((BType::from(-Self::B).unwrap())..=(BType::from(Self::B).unwrap())),
             DV,
             DC,
             N,
             R,
+            combination_ops_type: PhantomData,
+            parity_ops_type: PhantomData,
+            b_type: PhantomData,
         }
     }
 
-    /// Formats the sum of two numbers as string.
-    ///
-    /// # Safety
-    ///
-    /// This function is safe to use if it does not panic in debug builds!
-    pub fn min_sum(&self, channel_llr: Vec<QaryLlrs<BSIZE>>, channel_llr_sum: Vec<QaryLlrs<BSUMSIZE>>) -> Result<Vec<BType>> {
+    fn initialize_channel_values<const SIZE: usize>(
+        &self,
+        vn: &mut Vec<VariableNode<SIZE>>,
+        channel_llr: &[QaryLlrs<SIZE>],
+        edges: &mut Container2D<Edge<SIZE>>,
+        start_var_idx: u16,
+    ) {
+        for (var_idx, (v, llr)) in (start_var_idx..).zip(vn.iter_mut().zip(channel_llr)) {
+            v.channel = Some(*llr);
+            for key in v.checks(var_idx) {
+                debug_unwrap!(edges.get_mut(&key)).v2c.insert(P::mult_by_parity(llr, self.parity_check[&key]));
+            }
+        }
+    }
+
+    pub fn min_sum(
+        &self, 
+        channel_llr: Vec<QaryLlrs<BSIZE>>, 
+        channel_llr_comb: Vec<QaryLlrs<COMB_SIZE>>
+    ) -> Result<Vec<BType>> {
         // Clone the states that we need to mutate
         let mut vn = self.vn.clone();
-        let mut vnsum = self.vnsum.clone();
+        let mut vn_comb = self.vn_comb.clone();
         let mut edges = self.edges.clone();
-        let mut edgessum = self.edgessum.clone();
-        let mut hard_decision = vec![BType::zero(); self.N];
-
+        let mut edges_comb = self.edges_comb.clone();
+        
         let BVARS = self.N - self.R;
         let SW = self.DC - 1;
 
-        // 0. Initialize the channel values
-        for (var_idx, (v, m)) in (0..).zip(vn.iter_mut().zip(channel_llr)) {
-            v.channel = Some(m);
-            for key in v.checks(var_idx) {
-                // We assume that only plus or minus ones are present in the parity check matrix
-                debug_unwrap!(edges.get_mut(&key)).v2c.insert(m.mult_in_gf(self.parity_check[&key]));
-            }
-        }
-        for (var_idx, (v, m)) in ((BVARS as u16)..).zip(vnsum.iter_mut().zip(channel_llr_sum)) {
-            v.channel = Some(m);
-            for key in v.checks(var_idx) {
-                // We assume that only plus or minus ones are present in the parity check matrix
-                debug_unwrap!(edgessum.get_mut(&key)).v2c.insert(m.mult_in_gf(self.parity_check[&key]));
-            }
-        }
+        let mut hard_decision = vec![BType::zero(); BVARS];
 
-        // ::log::info!("Decoder has the following parameters:\n vn={:?}\n\n\n vnsum={:?}\n\n\n cn={:?} \n\n\n edges={:?} \n\n\n edgessum={:?}", vn, vnsum, self.cn, edges, edgessum);
-        // ::log::info!("Decoder has the following parameters:\n vn={:?}\n\n\n vnsum={:?}\n\n\n cn={:?} \n\n\n edges={:?} \n\n\n edgessum={:?}", vn[0], vnsum[0], self.cn[0], edges.iter().next(), edgessum.iter().next());
+        // 0. Initialize the channel values
+        self.initialize_channel_values(
+            &mut vn,
+            &channel_llr,
+            &mut edges,
+            0,
+        );
+        self.initialize_channel_values(
+            &mut vn_comb,
+            &channel_llr_comb,
+            &mut edges_comb,
+            BVARS as u16,
+        );
 
         let mut it = 0;
         'decoding: loop {
@@ -536,50 +708,40 @@ where
                     .take(num_variable_nodes)
                     .map(|key| debug_unwrap!(&edges[&key].v2c.as_ref()))
                     .collect();
-                let alpha_ij_sum: &QaryLlrs<BSUMSIZE> = check_iter
-                    .map(|key| debug_unwrap!(&edgessum[&key].v2c.as_ref()))
+                let alpha_ij_comb: &QaryLlrs<COMB_SIZE> = check_iter
+                    .map(|key| debug_unwrap!(&edges_comb[&key].v2c.as_ref()))
                     .next()
                     .unwrap();
 
-                // ::log::info!("alpha_i {:?}, alpha_ij_sum = {:?}", alpha_i, alpha_ij_sum);
-
                 let mut beta_i = vec![QaryLlrs::<BSIZE>([FloatType::INFINITY; BSIZE]); SW];
-                let mut beta_ij_sum = QaryLlrs::<BSUMSIZE>([FloatType::INFINITY; BSUMSIZE]);
+                let mut beta_ij_comb = QaryLlrs::<COMB_SIZE>([FloatType::INFINITY; COMB_SIZE]);
 
-                // ::log::info!("beta_i {:?}, beta_ij_sum = {:?}", beta_i, beta_ij_sum);
-                
+                // TODO: actually start supporting less than SW variables
                 let mut d_values_iter = SimpleDValueIterator::<BType>::new(BType::from(B).unwrap(), num_nones, SW);
                 while let Some(d_values) = d_values_iter.next() {
-                    let mut d_value_sum = BType::zero();
-                    for d in d_values.iter() {
-                        d_value_sum += *d;
-                    }
-                    d_value_sum = -d_value_sum;
-
                     let mut sum_of_alpha: FloatType = alpha_i
                         .iter()
                         .zip(d_values)
                         .map(|(alpha_ij, d)| {
-                            alpha_ij.0[Self::b2i::<B>(*d)]
+                            alpha_ij.0[C::b2i::<B>(*d)]
                         })
                         .sum();
-                    sum_of_alpha += alpha_ij_sum.0[Self::b2i::<BSUM>(d_value_sum)];
+                    let d_comb_index = C::index_of_comb(d_values);
+                    sum_of_alpha += alpha_ij_comb.0[d_comb_index];
 
                     for ((beta_ij, d), alpha_ij) in beta_i.iter_mut().zip(d_values).zip(&alpha_i) {
-                        beta_ij.0[Self::b2i::<B>(*d)] = beta_ij.0[Self::b2i::<B>(*d)]
-                            .min(sum_of_alpha - alpha_ij.0[Self::b2i::<B>(*d)]);
+                        beta_ij.0[C::b2i::<B>(*d)] = beta_ij.0[C::b2i::<B>(*d)]
+                            .min(sum_of_alpha - alpha_ij.0[C::b2i::<B>(*d)]);
                     }
-                    beta_ij_sum.0[Self::b2i::<BSUM>(d_value_sum)] = beta_ij_sum.0[Self::b2i::<BSUM>(d_value_sum)]
-                        .min(sum_of_alpha - alpha_ij_sum.0[Self::b2i::<BSUM>(d_value_sum)]);
+                    beta_ij_comb.0[d_comb_index] = beta_ij_comb.0[d_comb_index]
+                        .min(sum_of_alpha - alpha_ij_comb.0[d_comb_index]);
                 }
 
                 let mut check_iter = check.variables(check_idx);
                 for (key, beta_ij) in check_iter.by_ref().take(num_variable_nodes).zip(&beta_i) {
                     debug_unwrap!(edges.get_mut(&key)).c2v.replace(*beta_ij);
                 }
-                debug_unwrap!(edgessum.get_mut(&check_iter.next().unwrap())).c2v.replace(beta_ij_sum);
-
-                // ::log::info!("beta_i {:?}, beta_ij_sum = {:?}", beta_i, beta_ij_sum);
+                debug_unwrap!(edges_comb.get_mut(&check_iter.next().unwrap())).c2v.replace(beta_ij_comb);
             }
 
             // Variable node update (sum)
@@ -590,13 +752,13 @@ where
                 let mut sum: QaryLlrs<BSIZE> = debug_unwrap!(var.channel);
                 for key in var.checks(var_idx) {
                     let incoming = debug_unwrap!(debug_unwrap!(edges.get(&key)).c2v);
-                    sum = sum.qary_add_with_mult_in_gf(incoming, self.parity_check[&key]);
+                    sum = P::add_with_mult_by_parity(&sum, &incoming, self.parity_check[&key]);
                 }
                 for key in var.checks(var_idx) {
                     // 4.2 primitive outgoing messages, subtract self for individual message
                     let edge = debug_unwrap!(edges.get_mut(&key));
                     let incoming = debug_unwrap!(edge.c2v);
-                    let prim_out = sum.qary_sub_with_mult_in_gf(incoming, self.parity_check[&key]).mult_in_gf(self.parity_check[&key]);
+                    let prim_out = P::sub_with_mult_by_parity_then_mult(&sum, &incoming, self.parity_check[&key]);
                     // 5. Message normalization
                     let arg_min = Self::arg_min::<BSIZE>(prim_out);
                     let out = prim_out.qary_sub_arg(arg_min);
@@ -605,26 +767,22 @@ where
 
                 if it >= self.max_iter {
                     // 6. Tentative decision
-                    hard_decision[var_idx as usize] = Self::i2b::<B>(Self::arg_min::<BSIZE>(sum));
+                    hard_decision[var_idx as usize] = C::i2b::<B>(Self::arg_min::<BSIZE>(sum));
                 }
             }
-            for (var_idx, var) in ((BVARS as u16)..).zip(&*vnsum) {
-                let mut sum: QaryLlrs<BSUMSIZE> = debug_unwrap!(var.channel);
+            for (var_idx, var) in ((BVARS as u16)..).zip(&*vn_comb) {
+                let mut sum: QaryLlrs<COMB_SIZE> = debug_unwrap!(var.channel);
                 for key in var.checks(var_idx) {
-                    let incoming = debug_unwrap!(debug_unwrap!(edgessum.get(&key)).c2v);
-                    sum = sum.qary_add_with_mult_in_gf(incoming, self.parity_check[&key]);
+                    let incoming = debug_unwrap!(debug_unwrap!(edges_comb.get(&key)).c2v);
+                    sum = P::add_with_mult_by_parity(&sum, &incoming, self.parity_check[&key]);
                 }
                 for key in var.checks(var_idx) {
-                    let edge = debug_unwrap!(edgessum.get_mut(&key));
+                    let edge = debug_unwrap!(edges_comb.get_mut(&key));
                     let incoming = debug_unwrap!(edge.c2v);
-                    let prim_out = sum.qary_sub_with_mult_in_gf(incoming, self.parity_check[&key]).mult_in_gf(self.parity_check[&key]);
-                    let arg_min = Self::arg_min::<BSUMSIZE>(prim_out);
+                    let prim_out = P::sub_with_mult_by_parity_then_mult(&sum, &incoming, self.parity_check[&key]);
+                    let arg_min = Self::arg_min::<COMB_SIZE>(prim_out);
                     let out = prim_out.qary_sub_arg(arg_min);
                     edge.v2c.replace(out);
-                }
-
-                if it >= self.max_iter {
-                    hard_decision[var_idx as usize] = Self::i2b::<BSUM>(Self::arg_min::<BSUMSIZE>(sum));
                 }
             }
 
@@ -636,13 +794,13 @@ where
         Ok(hard_decision)
     }
 
-    // we return only c2v to B variables since c2v message to BSUM variables does not
+    // we return only c2v to B variables since c2v message to combination variables does not
     // change anything since the degree of such variables is 1
     fn check_node_c2v_sum_product(
         check_idx: u16,
         check: &CheckNode,
         edges: &Container2D<Edge<BSIZE>>,
-        edgessum: &Container2D<Edge<BSUMSIZE>>,
+        edges_comb: &Container2D<Edge<COMB_SIZE>>,
         parity_check: &Container2D<ParCheckType>,
         SW: usize,
         ) -> Vec<QaryLlrs<BSIZE>> {
@@ -658,39 +816,29 @@ where
             .take(num_variable_nodes)
             .map(|key| debug_unwrap!(&edges[&key].v2c.as_ref()))
             .collect();
-        let alpha_ij_sum: &QaryLlrs<BSUMSIZE> = check_iter
-            .map(|key| debug_unwrap!(&edgessum[&key].v2c.as_ref()))
+        let alpha_ij_comb: &QaryLlrs<COMB_SIZE> = check_iter
+            .map(|key| debug_unwrap!(&edges_comb[&key].v2c.as_ref()))
             .next()
             .unwrap();
-
-        // ::log::info!("alpha_i {:?}, alpha_ij_sum = {:?}", alpha_i, alpha_ij_sum);
-        // println!("alpha_i {:?}, alpha_ij_sum = {:?}", alpha_i, alpha_ij_sum);
 
         // New c2v messages
         let mut beta_i = vec![QaryLlrs::<BSIZE>([FloatType::NEG_INFINITY; BSIZE]); num_variable_nodes];
         
         let mut d_values_iter = SimpleDValueIterator::<BType>::new(BType::from(B).unwrap(), num_nones, SW);
         while let Some(d_values) = d_values_iter.next() {
-            let mut d_value_sum = BType::zero();
-            for d in d_values.iter() {
-                d_value_sum += *d;
-            }
-            d_value_sum = -d_value_sum;
-
             let mut sum_of_alpha: FloatType = alpha_i
                 .iter()
                 .zip(d_values)
                 .map(|(alpha_ij, d)| {
-                    alpha_ij.0[Self::b2i::<B>(*d)]
+                    alpha_ij.0[C::b2i::<B>(*d)]
                 })
                 .sum();
-            let d_idx_sum = Self::b2i::<BSUM>(d_value_sum);
-            sum_of_alpha += alpha_ij_sum.0[d_idx_sum];
+            let d_comb_index = C::index_of_comb(d_values);
+            sum_of_alpha += alpha_ij_comb.0[d_comb_index];
 
             for ((beta_ij, d), alpha_ij) in beta_i.iter_mut().zip(d_values).zip(&alpha_i) {
-                let d_idx = Self::b2i::<B>(*d);
+                let d_idx = C::b2i::<B>(*d);
                 let c2v_value = sum_of_alpha - alpha_ij.0[d_idx];
-                // println!("(beta_ij{:?}): {:?} + {:?} = {:?}", d_idx, beta_ij.0[d_idx], c2v_value, beta_ij.0[d_idx].ln_add_exp(c2v_value));
                 beta_ij.0[d_idx] = beta_ij.0[d_idx].ln_add_exp(c2v_value);
             }
         }
@@ -735,17 +883,17 @@ where
     // Uses IDS scheduler, in particular, Node-wise
     // 
     // Note: the implementation can't handle impossible values, meaning that 
-    // channel_llr and channel_llr_sum should not contain -inf. That's because we
+    // channel_llr and channel_llr_comb should not contain -inf. That's because we
     // always assume the algorithm will be used for the imperfect oracle
-    pub fn sum_product_nw(&self, channel_llr: Vec<QaryLlrs<BSIZE>>, channel_llr_sum: Vec<QaryLlrs<BSUMSIZE>>) -> Result<Vec<BType>> {
+    pub fn sum_product_nw(&self, channel_llr: Vec<QaryLlrs<BSIZE>>, channel_llr_comb: Vec<QaryLlrs<COMB_SIZE>>) -> Result<Vec<BType>> {
         check_all_finite_assert(&channel_llr, "channel_llr");
-        check_all_finite_assert(&channel_llr_sum, "channel_llr_sum");
+        check_all_finite_assert(&channel_llr_comb, "channel_llr_comb");
 
         // Clone the states that we need to mutate
         let mut vn = self.vn.clone();
-        let mut vnsum = self.vnsum.clone();
+        let mut vn_comb = self.vn_comb.clone();
         let mut edges = self.edges.clone();
-        let mut edgessum = self.edgessum.clone();
+        let mut edges_comb = self.edges_comb.clone();
         
         let BVARS = self.N - self.R; // number of B-variables
         let mut hard_decision = vec![BType::zero(); BVARS];
@@ -760,27 +908,26 @@ where
             for key in v.checks(var_idx) {
                 // We assume that only plus or minus ones are present in the parity check matrix
                 let mut edge = debug_unwrap!(edges.get_mut(&key));
-                edge.v2c.insert(m.mult_in_gf(self.parity_check[&key]));
+                edge.v2c.insert(P::mult_by_parity(&m, self.parity_check[&key]));
                 edge.c2v.replace(c2v_init.clone());
             }
         }
-        // Similarly for sum variables; note: var_idx starts NOT from 0
-        for (var_idx, (v, m)) in ((BVARS as Key1D)..).zip(vnsum.iter_mut().zip(channel_llr_sum)) {
+        // Similarly for comb variables; note: var_idx starts NOT from 0
+        for (var_idx, (v, m)) in ((BVARS as Key1D)..).zip(vn_comb.iter_mut().zip(channel_llr_comb)) {
             v.channel = Some(m);
             for key in v.checks(var_idx) {
-                let mut edge = debug_unwrap!(edgessum.get_mut(&key));
-                edge.v2c.insert(m.mult_in_gf(self.parity_check[&key]));
+                let mut edge = debug_unwrap!(edges_comb.get_mut(&key));
+                edge.v2c.insert(P::mult_by_parity(&m, self.parity_check[&key]));
             }
         }
 
         // 3. Compute all \alpha_c
-        let mut priorities = vec![FloatType::NEG_INFINITY; self.R];
+        let mut priorities = vec![FloatType::NEG_INFINITY; self.N];
         for (check_idx, check) in (0..).zip(&*self.cn) {
             // TODO: priority computation can be implemented via min-sum
             let beta_i = Self::check_node_c2v_sum_product(
-                check_idx, check, &edges, &edgessum, &self.parity_check, SW
+                check_idx, check, &edges, &edges_comb, &self.parity_check, SW
             );
-            // println!("beta_i = {:?}", beta_i);
             let mut alpha_c = FloatType::default();
             for (key, beta_ij) in check.variables(check_idx).zip(&beta_i) {
                 let edge = debug_unwrap!(edges.get(&key));
@@ -791,7 +938,6 @@ where
             }
             priorities[check_idx as usize] = alpha_c;
         }
-        // println!("priorities = {:?}", priorities);
 
         let mut it = 0;
         'decoding: loop {
@@ -808,21 +954,17 @@ where
                 }
             }
 
-            // println!("Working on check node {:?} with priority {:?}", max_priority_idx, max_priority);
-
             // 5-12. Note that line 6 with generation and propagation of m_{c_i -> v_k} does NOT
             // depend on messages that are changed in line 9, so, we change computation order a bit
 
             // 5-6. Compute m_{c_i -> v_k} for all v_k connected to c_i
             let check = &self.cn[max_priority_idx];
             let beta_i = Self::check_node_c2v_sum_product(
-                max_priority_idx as Key1D, check, &edges, &edgessum, &self.parity_check, SW
+                max_priority_idx as Key1D, check, &edges, &edges_comb, &self.parity_check, SW
             );
-            // println!("beta_i {:?}", beta_i);
 
             // 6. Propagate m_{c_i -> v_k} for variable nodes from check c_i
             for (key, beta_ij) in check.variables(max_priority_idx as Key1D).zip(&beta_i) {
-                // println!("Propagating message m_(c_{:?} -> v_{:?})", key.row(), key.col());
                 let mut edge = debug_unwrap!(edges.get_mut(&key));
                 edge.c2v.replace(*beta_ij);
             }
@@ -836,32 +978,24 @@ where
                 let var_idx = key_i.col();
                 let var = &vn[var_idx];
 
-                // println!("Working on variable node {:?}", var_idx);
-
                 // 9. Generate and propagate m_{v_k -> c_a}
                 let mut sum: QaryLlrs<BSIZE> = debug_unwrap!(var.channel);
-                // println!("var_idx {:?}, channel = {:?}", var_idx, sum);
                 for key in var.checks(var_idx as Key1D) {
                     let edge = debug_unwrap!(edges.get(&key));
                     let incoming = debug_unwrap!(edge.c2v);
-                    // println!("incoming {:?} (not multiplied by +-1)", incoming);
-                    sum = sum.qary_add_with_mult_in_gf(incoming, self.parity_check[&key]);
+                    sum = P::add_with_mult_by_parity(&sum, &incoming, self.parity_check[&key]);
                 }
-                // println!("var_idx {:?}, sum = {:?}", var_idx, sum);
                 for key in var.checks(var_idx as Key1D) {
                     if (key.row() == max_priority_idx) {
                         continue;
                     }
-                    // println!("Propagating message m_(v_{:?} -> c_{:?})", key.col(), key.row());
                     let mut edge = debug_unwrap!(edges.get_mut(&key));
                     let incoming = debug_unwrap!(edge.c2v);
                     // TODO: Very important! if some symbols are impossible, i.e. equal to -inf, then
                     // approach with subtraction is not correct, need to actually compute they "fairly"
-                    let mut prim_out = sum.qary_sub_with_mult_in_gf(incoming, self.parity_check[&key]).mult_in_gf(self.parity_check[&key]);
-                    // println!("var_idx {:?}, prim_out = {:?}", var_idx, prim_out);
+                    let mut prim_out = P::sub_with_mult_by_parity_then_mult(&sum, &incoming, self.parity_check[&key]);
                     // message normalization
                     normalize_log_probs(&mut prim_out.0);
-                    // println!("var_idx {:?}, out = {:?}", var_idx, prim_out);
                     edge.v2c.replace(prim_out);
 
                     // 10. compute \alpha_{c_a}
@@ -869,7 +1003,7 @@ where
                     let check_a = &self.cn[check_idx];
                     // TODO: priority computation can be implemented via min-sum
                     let beta_a = Self::check_node_c2v_sum_product(
-                        check_idx as Key1D, check_a, &edges, &edgessum, &self.parity_check, SW
+                        check_idx as Key1D, check_a, &edges, &edges_comb, &self.parity_check, SW
                     );
                     let mut alpha_ca = FloatType::default();
                     for (key_a, beta_aj) in check_a.variables(check_idx as Key1D).zip(&beta_a) {
@@ -880,7 +1014,6 @@ where
                         }
                     }
                     priorities[check_idx] = alpha_ca;
-                    // println!("New priority for check node {:?} = {:?}", check_idx, alpha_ca);
                 }
             }
 
@@ -914,11 +1047,10 @@ where
             let mut sum: QaryLlrs<BSIZE> = debug_unwrap!(var.channel);
             for key in var.checks(var_idx) {
                 let incoming = debug_unwrap!(debug_unwrap!(edges.get(&key)).c2v);
-                sum = sum.qary_add_with_mult_in_gf(incoming, self.parity_check[&key]);
+                sum = P::add_with_mult_by_parity(&sum, &incoming, self.parity_check[&key]);
             }
 
-            hard_decision[var_idx as usize] = Self::i2b::<B>(Self::arg_max::<BSIZE>(sum));
-            // println!("var {:?}: {:?} -> {:?}", var_idx, sum, hard_decision[var_idx as usize]);
+            hard_decision[var_idx as usize] = C::i2b::<B>(Self::arg_max::<BSIZE>(sum));
         }
 
         Ok(hard_decision)
@@ -1010,25 +1142,6 @@ where
         }
         max_arg
     }
-
-    pub fn i2b<const T: usize>(i: usize) -> BType {
-        let i: isize = i.try_into().unwrap();
-        let b: isize = T.try_into().unwrap();
-        let val = i - b;
-        if val > b || val < -b {
-            panic!("Value over-/underflow!");
-        }
-        BType::from(val).unwrap()
-    }
-
-    pub fn b2i<const T: usize>(val: BType) -> usize
-    where
-        BType: TryInto<usize>,
-    {
-        let mut val: isize = val.to_isize().unwrap();
-
-        (val + (T as isize)) as usize
-    }
 }
 
 fn into_or_panic<T, U>(from: T) -> U
@@ -1048,7 +1161,10 @@ mod tests {
 
     #[test]
     fn system_of_equations_weight_2() {
-        type TestDecoder = DecoderSpecial<1, 3, 2, 5, i8>;
+        // TODO: a bit ugly, but works
+        type C = SumCombination<i8, 1>;
+        type TestDecoder = DecoderSpecial<C, TernaryParityCheckOps, 1, 3, 5, i8>;
+
         let mut parity_check = vec![
             vec![1, 1, 0],
             vec![1, 0, 1],
@@ -1056,40 +1172,42 @@ mod tests {
         ];
         
 
-        let num_checks = parity_check.len();
-        let num_variables = parity_check[0].len();
+        let R = parity_check.len();
+        let N = parity_check[0].len();
         // Append negative identity matrix to the right
         for (i, row) in parity_check.iter_mut().enumerate() {
-            row.extend((0..num_checks).map(|j| if i == j { -1 } else { 0 }));
+            row.extend((0..R).map(|j| if i == j { -1 } else { 0 }));
         }
 
         let DV = 2;
         let DC = 2+1;
+        let num_variables = DC - 1;
         let iterations = 10;
         let decoder = TestDecoder::new(parity_check.clone(), DV, DC, iterations);
 
         // NTRU distribution
         // let prior_secret: Vec<FloatType> = vec![85.0 / 256.0, 86.0 / 256.0, 85.0 / 256.0];
         let prior_secret: Vec<FloatType> = vec![1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0];
-        let mut channel_output: Vec<Vec<FloatType>> = Vec::with_capacity(num_variables);
-        for _ in 0..num_variables {
+        let mut channel_output: Vec<Vec<FloatType>> = Vec::with_capacity(N);
+        for _ in 0..N {
             channel_output.push(prior_secret.clone());
         }
 
         let f = vec![0, -1, 1];
 
-        let mut channel_output_sum: Vec<Vec<FloatType>> = Vec::new();
+        let mut channel_output_comb: Vec<Vec<FloatType>> = Vec::new();
         for row in &parity_check {
-            let dot_product: i8 = row.iter().take(num_variables).zip(&f).map(|(a, b)| a * b).sum();
-            let mut cond_prob = vec![0.01; TestDecoder::BSUMSIZE];
-            cond_prob[(dot_product + TestDecoder::BSUM as i8) as usize] = 1.0 - 0.01 * ((TestDecoder::BSUMSIZE - 1) as FloatType);
-            channel_output_sum.push(cond_prob);
+            let dot_product: i8 = row.iter().take(N).zip(&f).map(|(a, b)| a * b).sum();
+            let mut cond_prob = vec![0.01; TestDecoder::COMB_SIZE];
+            
+            cond_prob[C::index_of_comb_val(dot_product, num_variables)] = 1.0 - 0.01 * ((TestDecoder::COMB_SIZE - 1) as FloatType);
+            channel_output_comb.push(cond_prob);
         }
 
         let channel_llr = TestDecoder::into_log_domain(&channel_output);
-        let channel_llr_sum = TestDecoder::into_log_domain(&channel_output_sum);
+        let channel_llr_comb = TestDecoder::into_log_domain(&channel_output_comb);
 
-        let res = decoder.sum_product_nw(channel_llr, channel_llr_sum).expect("Failed");
+        let res = decoder.sum_product_nw(channel_llr, channel_llr_comb).expect("Failed");
 
         println!("Decoded secret: {:?}", res);
 
@@ -1099,7 +1217,8 @@ mod tests {
 
     #[test]
     fn system_of_equations_weight_3() {
-        type TestDecoder = DecoderSpecial<1, 3, 3, 7, i8>;
+        type C = SumCombination<i8, 1>;
+        type TestDecoder = DecoderSpecial<C, TernaryParityCheckOps, 1, 3, 7, i8>;
         let mut parity_check = vec![
             vec![1, 0, 0, 1, 1, 0, 0, 0, 0, 0],
             vec![0, 1, 0, 0, 0, 0, 1, 0, 0, 1],
@@ -1113,47 +1232,88 @@ mod tests {
             vec![0, 0, 0, 1, 0, 0, 0, 0, 1, 1],
         ];
         
-
-        let num_checks = parity_check.len();
-        let num_variables = parity_check[0].len();
+        let R = parity_check.len();
+        let N = parity_check[0].len();
         // Append negative identity matrix to the right
         for (i, row) in parity_check.iter_mut().enumerate() {
-            row.extend((0..num_checks).map(|j| if i == j { -1 } else { 0 }));
+            row.extend((0..R).map(|j| if i == j { -1 } else { 0 }));
         }
 
         let DV = 4;
         let DC = 3+1;
+        let num_variables = DC - 1;
         let iterations = 30;
         let decoder = TestDecoder::new(parity_check.clone(), DV, DC, iterations);
 
         // NTRU distribution
         // let prior_secret: Vec<FloatType> = vec![85.0 / 256.0, 86.0 / 256.0, 85.0 / 256.0];
         let prior_secret: Vec<FloatType> = vec![1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0];
-        let mut channel_output: Vec<Vec<FloatType>> = Vec::with_capacity(num_variables);
-        for _ in 0..num_variables {
+        let mut channel_output: Vec<Vec<FloatType>> = Vec::with_capacity(N);
+        for _ in 0..N {
             channel_output.push(prior_secret.clone());
         }
 
         let f = vec![1, 0, 0, 0, 0, 0, -1, 0, 0, 1];
 
-        let mut channel_output_sum: Vec<Vec<FloatType>> = Vec::new();
+        let mut channel_output_comb: Vec<Vec<FloatType>> = Vec::new();
         for row in &parity_check {
             // considers only 0 or 1 in parity check matrix
-            let dot_product: i8 = row.iter().take(num_variables).zip(&f).map(|(a, b)| a * b).sum();
-            let mut cond_prob = vec![0.01; TestDecoder::BSUMSIZE];
-            cond_prob[(dot_product + TestDecoder::BSUM as i8) as usize] = 1.0 - 0.01 * ((TestDecoder::BSUMSIZE - 1) as FloatType);
-            channel_output_sum.push(cond_prob);
+            let dot_product: i8 = row.iter().take(N).zip(&f).map(|(a, b)| a * b).sum();
+            let mut cond_prob = vec![0.01; TestDecoder::COMB_SIZE];
+            cond_prob[C::index_of_comb_val(dot_product, num_variables)] = 1.0 - 0.01 * ((TestDecoder::COMB_SIZE - 1) as FloatType);
+            channel_output_comb.push(cond_prob);
         }
 
         let channel_llr = TestDecoder::into_log_domain(&channel_output);
-        let channel_llr_sum = TestDecoder::into_log_domain(&channel_output_sum);
+        let channel_llr_comb = TestDecoder::into_log_domain(&channel_output_comb);
 
-        let res = decoder.sum_product_nw(channel_llr, channel_llr_sum).expect("Failed");
+        let res = decoder.sum_product_nw(channel_llr, channel_llr_comb).expect("Failed");
 
         println!("Decoded secret: {:?}", res);
 
         assert_eq!(res, f);
         // assert!(1 == 0);
+    }
+
+    #[test]
+    fn small_kyber_like_test_no_errors() {
+        type C = JointCombination<i8, 2, 5>;
+        type TestDecoder = DecoderSpecial<C, BinaryParityCheckOps, 2, 5, 25, i8>;
+        let parity_check = vec![
+            vec![1, 1, 0, 0, 1, 0],
+            vec![0, 0, 1, 1, 0, 1],
+        ];
+
+        let decoder = TestDecoder::new(parity_check, 1, 3, 7);
+
+        let prior_secret: [FloatType; TestDecoder::BSIZE] = [0.0625, 0.25, 0.375, 0.25, 0.0625];
+        let num_variables = 4;
+        let mut channel_output: Vec<Vec<FloatType>> = Vec::with_capacity(num_variables);
+        for _ in 0..num_variables {
+            channel_output.push(prior_secret.to_vec());
+        }
+
+        let channel_output_comb: Vec<Vec<FloatType>> = vec![
+            {
+                let mut cond_prob = vec![0.001; 25];
+                cond_prob[0] = 1.0 - 0.001 * 24 as FloatType; // corresponding to (-2, -2)
+                cond_prob
+            },
+            {
+                let mut cond_prob = vec![0.001; 25];
+                cond_prob[17] = 1.0 - 0.001 * 24 as FloatType; // corresponding to (0, 1)
+                cond_prob
+            },
+        ];
+
+        let channel_llr = TestDecoder::into_log_domain(&channel_output);
+        let channel_llr_comb = TestDecoder::into_log_domain(&channel_output_comb);
+
+        let res = decoder.sum_product_nw(channel_llr, channel_llr_comb).expect("Failed");
+
+        let expected: Vec<i8> = vec![-2, -2, 0, 1];
+
+        assert_eq!(res, expected);
     }
 
 }

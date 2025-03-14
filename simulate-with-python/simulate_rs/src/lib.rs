@@ -18,10 +18,7 @@ mod hqc;
 #[macro_use]
 mod pydecoder;
 mod decoder_special;
-pub use decoder_special::{DecoderSpecial};
-mod decoder_joint_distribution;
-pub use decoder_joint_distribution::{DecoderJointDistribution};
-
+pub use decoder_special::{DecoderSpecial, SumCombination, JointCombination, TernaryParityCheckOps, BinaryParityCheckOps};
 
 
 /// A Python module implemented in Rust.
@@ -52,62 +49,54 @@ fn simulate_rs(_py: Python, m: &PyModule) -> PyResult<()> {
         }
     );
 
-    register_py_decoder_special_class!(
+    register_py_decoder_sum_distribution_class!(
         m <= DecoderNTRUW2 {
             B: 1,
-            BSUM: 2
+            SW: 2
         }
     );
 
-    register_py_decoder_special_class!(
+    register_py_decoder_sum_distribution_class!(
         m <= DecoderNTRUW4 {
             B: 1,
-            BSUM: 4
+            SW: 4
         }
     );
 
-    register_py_decoder_special_class!(
+    register_py_decoder_sum_distribution_class!(
         m <= DecoderNTRUW6 {
             B: 1,
-            BSUM: 6
+            SW: 6
         }
     );
 
     register_py_decoder_joint_distribution_class!(
         m <= DecoderKyberB2SW2 {
             B: 2,
-            DC: 3
+            SW: 2
         }
     );
 
     register_py_decoder_joint_distribution_class!(
         m <= DecoderKyberB2SW4 {
             B: 2,
-            DC: 5
+            SW: 4
         }
     );
 
     // Full Kyber-768, sum_weight = 6, check_blocks = 1
-    register_py_decoder_special_class!(
+    register_py_decoder_sum_distribution_class!(
         m <= DecoderN1024R256SW6 {
-            // N: 1024, // 768 + check_blocks*256
-            // R: 256,
-            // DV: 2,
-            // DC: 7,
             B: 2,
-            BSUM: 12
+            SW: 6
         }
     );
 
     // Full Kyber-768, sum_weight = 6, check_blocks = 2
-    register_py_decoder_special_class!(
+    register_py_decoder_sum_distribution_class!(
         m <= DecoderN1280R512SW6 {
-            // N: 1280,
-            // R: 512,
-            // DV: 4,
-            // DC: 7,
             B: 2,
-            BSUM: 12
+            SW: 6
         }
     );
 
