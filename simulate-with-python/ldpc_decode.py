@@ -1,4 +1,5 @@
 import os.path
+import re
 import sys
 
 import coloredlogs
@@ -31,7 +32,7 @@ def process_file(filename, n, check_weight):
 
     # read lines in blocks of 2
     for i in range(0, len(lines), 2):
-        indices = list(map(int, lines[i].strip().split(", ")))
+        indices = list(map(int, lines[i].strip().split(",")))
         probabilities = list(map(float, lines[i + 1].strip().split(",")))
 
         # support the case where extra probabilities are not printed
@@ -57,80 +58,412 @@ def process_file(filename, n, check_weight):
             matrix[i, index] = 1
         matrix[i, n + i] = -1
 
-    return matrix, probability_lists, single_check_idxs, single_check_distr
+    return matrix, index_lines, probability_lists, single_check_idxs, single_check_distr
 
 
-argv = sys.argv
-if len(argv) < 3:
-    print("Usage: <program> <prob_file> <out_file> [<LDPC_iterations>]")
-    exit()
+def parse_file(file_path):
+    keys = []
+    collisions = []
+
+    p = re.compile("pq_counter: (\d+),inner_test: (\d+)")
+
+    with open(file_path, "r") as f:
+        current_key = []
+        in_key_section = False
+        collision_info = []
+
+        current_counter = None
+        for line in f:
+            line = line.strip()
+
+            # Look for "pq_counter:"
+            if line.startswith("pq_counter:"):
+                m = p.match(line)
+                pq_counter = int(m[1])
+                # If the counter is different, we finished handling and we save it
+                if current_counter is None:
+                    current_counter = pq_counter
+                elif pq_counter != current_counter:
+                    current_counter = pq_counter
+                    keys.append(current_key)
+                    collisions.append(collision_info)
+                # Reset variables for new entry
+                current_key = []
+                in_key_section = False
+                collision_info = []
+
+            # Look for "The private key is:"
+            elif line == "The private key is:":
+                in_key_section = True
+                continue  # Skip to next line, where the key starts
+
+            # If we are in the key section, capture the key data
+            elif in_key_section:
+                if line:  # If the line contains key data
+                    # Remove trailing comma and split the key values
+                    current_key = [int(x) for x in line.rstrip(",").split(",")]
+                    in_key_section = False  # We are done with key section
+
+            # Capture collision index and value
+            elif line.startswith("collision_index"):
+                index_value = line.split(",")
+                collision_index = int(index_value[0].split(":")[1])
+                collision_value = int(index_value[1].split(":")[1])
+                collision_info.append((collision_index, collision_value))
+
+    # Don't forget to add the last data
+    keys.append(current_key)
+    collisions.append(collision_info)
+    return keys, collisions
+
+
+def is_unreliable(pmf, threshold=0.8):
+    max_pr = np.max(pmf)
+    return max_pr < threshold
+
+
+def set_unreliable_to_second_most_probable(pmf, tau=0.01):
+    sorted_indices = np.argsort(pmf)[::-1]
+    second_largest_index = sorted_indices[1]
+
+    new_pmf = np.full_like(pmf, fill_value=tau, dtype=float)
+
+    n = len(pmf)
+    new_pmf[second_largest_index] = 1.0 - tau * (n - 1)
+
+    return new_pmf.tolist()
+
+
+def list_of_unsatisfied_checks(f, variable_in_check_idxs, check_variables, col_idx):
+    BSUM = len(check_variables[0]) // 2
+    unsatisfied_checks = []
+    for variable_idxs, check_pmf in zip(variable_in_check_idxs, check_variables):
+        if variable_idxs[0] < col_idx:
+            continue
+        beta_u = 0
+        for idx in variable_idxs:
+            beta_u += f[idx]
+        beta_from_pmf = np.argmax(check_pmf) - BSUM
+        if beta_u != beta_from_pmf:
+            unsatisfied_checks.append(tuple(variable_idxs))
+    return unsatisfied_checks
+
+
+def filter_unreliable_checks(unsatisfied_checks, s_pmfs):
+    unreliable_checks = []
+    for variable_idxs in unsatisfied_checks:
+        for idx in variable_idxs:
+            if is_unreliable(s_pmfs[idx]):
+                unreliable_checks.append(variable_idxs)
+                break
+    return unreliable_checks
+
+
+def find_unreliable_block(s_pmfs, unreliable_idx):
+    l = len(s_pmfs)
+    idx_lower = unreliable_idx
+    idx_upper = unreliable_idx + 1
+    while idx_lower > 0 and is_unreliable(s_pmfs[idx_lower - 1]):
+        idx_lower -= 1
+    while is_unreliable(s_pmfs[idx_upper % l]):
+        idx_upper += 1
+    return idx_lower, idx_upper
+
+
+def decode_with_post_block_flip_optimization(
+    decoder, secret_variables, check_variables, variable_in_check_idxs, col_idx
+):
+    s_decoded_pmfs_orig = decoder.decode_with_pr(secret_variables, check_variables)
+    ret = s_decoded_pmfs_orig
+    fprime = list(np.argmax(pmf) - 1 for pmf in s_decoded_pmfs_orig)
+
+    # potentially_incorrect = []
+
+    unsatisfied_checks_orig = list_of_unsatisfied_checks(
+        fprime, variable_in_check_idxs, check_variables, col_idx
+    )
+    # print(f"{unsatisfied_checks_orig=}")
+    cur_unsatisfied_checks = unsatisfied_checks_orig
+    cur_s_decoded_pmfs = s_decoded_pmfs_orig
+    for i, variable_idxs in enumerate(unsatisfied_checks_orig):
+        unreliable_idx = None
+        for idx in variable_idxs:
+            if is_unreliable(s_decoded_pmfs_orig[idx]):
+                # if is_unreliable(cur_s_decoded_pmfs[idx]):
+                unreliable_idx = idx
+                break
+        if unreliable_idx is None:
+            continue
+        # # TODO: blocks can be the same, keep track of what we tried
+        # idx_lower, idx_upper = find_unreliable_block(
+        #     s_decoded_pmfs_orig, unreliable_idx
+        # )
+
+        # two neighboring checks often define boundaries of incorrect block
+        if (
+            i < len(unsatisfied_checks_orig) - 1
+            and (variable_idxs[0] - unsatisfied_checks_orig[i + 1][1]) < 13
+        ):
+            idx_lower = unsatisfied_checks_orig[i + 1][1]
+            idx_upper = variable_idxs[1]
+        else:
+            idx_lower, idx_upper = find_unreliable_block(
+                cur_s_decoded_pmfs, unreliable_idx
+            )
+
+        # print(f"looking at flipping {(idx_lower, idx_upper)}")
+        new_secret_variables = secret_variables.copy()
+        for idx in range(idx_lower, idx_upper):
+            idx = idx % len(s_decoded_pmfs_orig)
+            # TODO: change s_decoded_pmfs_orig in the process?
+            new_secret_variables[idx] = set_unreliable_to_second_most_probable(
+                s_decoded_pmfs_orig[idx],
+                tau=0.01,
+            )
+            # new_secret_variables[idx] = set_unreliable_to_second_most_probable(
+            #     cur_s_decoded_pmfs[idx]
+            # )
+        s_decoded_pmfs = decoder.decode_with_pr(new_secret_variables, check_variables)
+        fprime = list(np.argmax(pmf) - 1 for pmf in s_decoded_pmfs)
+
+        unsatisfied_checks = list_of_unsatisfied_checks(
+            fprime, variable_in_check_idxs, check_variables, col_idx
+        )
+        # print(f"{unsatisfied_checks=}")
+        if len(unsatisfied_checks) < len(cur_unsatisfied_checks):
+            # print(
+            #     f"managed to reduce number of unsatisfied checks by flipping values in ({idx_lower}, {idx_upper})"
+            # )
+            cur_unsatisfied_checks = unsatisfied_checks
+            secret_variables = new_secret_variables
+            ret = s_decoded_pmfs
+            cur_s_decoded_pmfs = s_decoded_pmfs
+            continue
+        # unsatisfied_checks_diff = set(cur_unsatisfied_checks) - set(unsatisfied_checks)
+        # new_unsatisfied = set(unsatisfied_checks) - set(cur_unsatisfied_checks)
+        # print(f"{cur_unsatisfied_checks=}")
+        # print(f"{unsatisfied_checks_diff=}")
+        # print(f"{new_unsatisfied=}")
+        # if len(new_unsatisfied) == 1:
+        #     new_unsatisfied_check = new_unsatisfied.pop()
+        #     if (
+        #         idx_lower <= new_unsatisfied_check[0] < idx_upper
+        #         or idx_lower <= new_unsatisfied_check[1] < idx_upper
+        #     ):
+        #         idx_lower_new = max(idx_lower, new_unsatisfied_check[0])
+        #         idx_upper_new = min(idx_upper, new_unsatisfied_check[1])
+        #         print(f"Trying flipping new {(idx_lower_new, idx_upper_new)}")
+        #         new_secret_variables = secret_variables.copy()
+        #         for idx in range(idx_lower_new, idx_upper_new):
+        #             idx = idx % len(s_decoded_pmfs_orig)
+        #             new_secret_variables[idx] = set_unreliable_to_second_most_probable(
+        #                 s_decoded_pmfs_orig[idx],
+        #                 tau=0.01,
+        #             )
+        #         s_decoded_pmfs_new = decoder.decode_with_pr(
+        #             new_secret_variables, check_variables
+        #         )
+        #         fprime_new = list(np.argmax(pmf) - 1 for pmf in s_decoded_pmfs_new)
+
+        #         unsatisfied_checks_new = list_of_unsatisfied_checks(
+        #             fprime_new, variable_in_check_idxs, check_variables, col_idx
+        #         )
+        #         print("AAAAAAAAAAAAAA")
+        #         print(f"{unsatisfied_checks_new=}")
+        #     new_unsatisfied.add(new_unsatisfied_check)
+
+        # if len(unsatisfied_checks_diff) == 1:
+        #     if (idx_lower, idx_upper) not in unsatisfied_checks_diff:
+        #         print(
+        #             "PROBLEM: if (idx_lower, idx_upper) not in unsatisfied_checks_diff:"
+        #         )
+        #         print(f"{unsatisfied_checks_diff=}")
+        #         print(f"{cur_unsatisfied_checks=}")
+        #         print(f"{unsatisfied_checks=}")
+
+        #         continue
+
+        #     if len(new_unsatisfied) != 1:
+        #         print("PROBLEM: if len(new_unsatisfied) != 1:")
+        #         print(f"{new_unsatisfied=}")
+        #         print(f"{cur_unsatisfied_checks=}")
+        #         print(f"{unsatisfied_checks=}")
+
+        #         exit()
+        #     potential_error = set((idx_lower, idx_upper)).intersection(
+        #         new_unsatisfied.pop()
+        #     )
+        #     if len(potential_error) == 1:
+        #         potentially_incorrect.append(potential_error.pop())
+    return ret
+
+
+# argv = sys.argv
+# if len(argv) < 3:
+#     print("Usage: <program> <prob_file> <out_file> [<LDPC_iterations>]")
+#     exit()
+
+prob_filename = "conditinal probs/private_key_and_collision_info.bin"
+outfile = open("outfile.txt", "wt")
+filename_pattern = (
+    "conditinal probs/For NO_TESTS is {} alpha_u_and_conditional_probabilities.bin"
+)
+
+keys, collisions = parse_file(prob_filename)
+
+keys_to_test = range(0, 20)
 
 iterations = 10000
-if len(argv) >= 4:
-    iterations = int(argv[3])
+# if len(argv) >= 4:
+#     iterations = int(argv[3])
 # number of coefficients of f
 p = 761
 # weight of f
 w = 286
 check_weight = 2
 
-# read posterior distribution of check variables
-filename = argv[1]
-H, check_variables, single_check_idxs, single_check_distr = process_file(
-    filename, p, check_weight
-)
-if H is None or check_variables is None:
-    exit()
-row_counts = np.count_nonzero(H, axis=1)
-max_row_weight = np.max(row_counts)
-col_counts = np.count_nonzero(H, axis=0)
-max_col_weight = np.max(col_counts)
-
-# print(len(H), len(H[0]))
-# print(max_row_weight, max_col_weight)
-# print(f"min={np.min(col_counts)}; variance = {np.var(col_counts)}")
-
 # determine the prior distribution of coefficients of f
 f_zero_prob = (p - w) / p
 f_one_prob = (1 - f_zero_prob) / 2
-secret_variables = []
 
-single_checks = sorted(zip(single_check_idxs, single_check_distr))
-single_checks_idx = 0
-for i in range(p):
-    if (
-        single_checks_idx < len(single_checks)
-        and single_checks[single_checks_idx][0] == i
-    ):
-        distr = single_checks[single_checks_idx][1]
-        l = len(distr)
-        secret_variables.append(distr[l // 2 - 1 : l // 2 + 2])
-        single_checks_idx += 1
+differences_arr = []
+full_recovered_keys = 0
+for key_idx in keys_to_test:
+    # print(f"working over key {key_idx} with collisions {collisions[key_idx]}")
+    if len(collisions[key_idx]) > 1:
+        print(f"skipping multiple collision case for {key_idx}")
+        continue
+    # read posterior distribution of check variables
+    filename = filename_pattern.format(key_idx)
+    (
+        H,
+        variable_in_check_idxs,
+        check_variables,
+        single_check_idxs,
+        single_check_distr,
+    ) = process_file(filename, p, check_weight)
+    col_idx = single_check_idxs[0]
+
+    if H is None or check_variables is None:
+        exit()
+    row_counts = np.count_nonzero(H, axis=1)
+    max_row_weight = np.max(row_counts)
+    col_counts = np.count_nonzero(H, axis=0)
+    max_col_weight = np.max(col_counts)
+
+    if (max_row_weight - 1) > check_weight:
+        print(f"skipping too large predicted collision index for {key_idx}")
+        continue
+
+    # print(len(H), len(H[0]))
+    # print(max_row_weight, max_col_weight)
+    # print(f"min={np.min(col_counts)}; variance = {np.var(col_counts)}")
+
+    secret_variables = []
+
+    single_checks = sorted(zip(single_check_idxs, single_check_distr))
+    single_checks_idx = 0
+    for i in range(p):
+        if (
+            single_checks_idx < len(single_checks)
+            and single_checks[single_checks_idx][0] == i
+        ):
+            distr = single_checks[single_checks_idx][1]
+            l = len(distr)
+            secret_variables.append(distr[l // 2 - 1 : l // 2 + 2])
+            single_checks_idx += 1
+        else:
+            secret_variables.append([f_one_prob, f_zero_prob, f_one_prob])
+
+    # convert to numpy arrays for Rust be able to work on the arrays
+    secret_variables = np.array(secret_variables, dtype=np.float32)
+    check_variables = np.array(check_variables, dtype=np.float32)
+    # if collision value is 1, we need to multiply the result by -1
+    if collisions[key_idx][0][1] == 1:
+        secret_variables = secret_variables[:, ::-1]
+        check_variables = check_variables[:, ::-1]
+
+    # print("Creating decoder")
+    if check_weight == 2:
+        decoder = DecoderNTRUW2(
+            H.astype("int8"), max_col_weight, max_row_weight, iterations
+        )
+    elif check_weight == 4:
+        decoder = DecoderNTRUW4(
+            H.astype("int8"), max_col_weight, max_row_weight, iterations
+        )
+    elif check_weight == 6:
+        decoder = DecoderNTRUW6(
+            H.astype("int8"), max_col_weight, max_row_weight, iterations
+        )
     else:
-        secret_variables.append([f_one_prob, f_zero_prob, f_one_prob])
+        raise ValueError("Not supported check weight")
 
-# convert to numpy arrays for Rust be able to work on the arrays
-secret_variables = np.array(secret_variables, dtype=np.float32)
-check_variables = np.array(check_variables, dtype=np.float32)
+    # s_decoded_pmfs = decoder.decode_with_pr(secret_variables, check_variables)
+    # s_decoded_pmfs = decode_with_post_block_flip_optimization(
+    #     decoder, secret_variables, check_variables, variable_in_check_idxs, col_idx
+    # )
+    # for i, pmf in enumerate(s_decoded_pmfs):
+    #     print(f"{i}: {pmf}")
 
-# print("Creating decoder")
-if check_weight == 2:
-    decoder = DecoderNTRUW2(
-        H.astype("int8"), max_col_weight, max_row_weight, iterations
-    )
-elif check_weight == 4:
-    decoder = DecoderNTRUW4(
-        H.astype("int8"), max_col_weight, max_row_weight, iterations
-    )
-elif check_weight == 6:
-    decoder = DecoderNTRUW6(
-        H.astype("int8"), max_col_weight, max_row_weight, iterations
-    )
-else:
-    raise ValueError("Not supported check weight")
-# print("Decoder created, computing min_sum")
-s_decoded = decoder.decode(secret_variables, check_variables)
-# print("Done")
+    f = keys[key_idx]
+    # fprime = list(np.argmax(pmf) - 1 for pmf in s_decoded_pmfs)
 
-with open(argv[2], "wt") as f:
-    print(s_decoded, file=f)
+    # BSUM = len(check_variables[0]) // 2
+    # unsatisfied_checks = 0
+    # print("Getting wrong checks even with majority voting:")
+    # for variable_idxs, check_pmf in zip(variable_in_check_idxs, check_variables):
+    #     if variable_idxs[0] < col_idx:
+    #         continue
+    #     true_beta = 0
+    #     for idx in variable_idxs:
+    #         true_beta += f[idx]
+    #     beta_from_pmf = np.argmax(check_pmf) - BSUM
+    #     if true_beta != beta_from_pmf:
+    #         print(f"{variable_idxs}: {true_beta} != {beta_from_pmf}", file=outfile)
+    # print("++++++++++")
+    # for variable_idxs, check_pmf in zip(variable_in_check_idxs, check_variables):
+    #     if variable_idxs[0] < col_idx:
+    #         continue
+    #     beta_u = 0
+    #     true_beta = 0
+    #     for idx in variable_idxs:
+    #         beta_u += fprime[idx]
+    #         true_beta += f[idx]
+    #     beta_from_pmf = np.argmax(check_pmf) - BSUM
+    #     if beta_u != beta_from_pmf:
+    #         unsatisfied_checks += 1
+    #         print(
+    #             f"{variable_idxs}: {beta_u} != {beta_from_pmf} =? {true_beta}; {'(check pmf with error)' if beta_from_pmf != true_beta else ''}"
+    #         )
+    #         for idx in variable_idxs:
+    #             if is_unreliable(s_decoded_pmfs[idx]):
+    #                 print(f"{idx} is unreliable")
+    # print(f"{unsatisfied_checks=}")
+
+    s_decoded_pmfs = decode_with_post_block_flip_optimization(
+        decoder, secret_variables, check_variables, variable_in_check_idxs, col_idx
+    )
+    # super_unreliable = list(
+    #     idx
+    #     for idx in range(col_idx, len(s_decoded_pmfs))
+    #     if is_unreliable(s_decoded_pmfs[idx], 0.6)
+    # )
+    # print(f"very unreliable coefs: {super_unreliable}")
+    fprime = list(np.argmax(pmf) - 1 for pmf in s_decoded_pmfs)
+    differences = sum(f[i] != fprime[i] for i in range(len(f)))
+    if differences == 0:
+        full_recovered_keys += 1
+    differences_arr.append(differences)
+
+    print(f"For key {key_idx} have total {differences} errors:", file=outfile)
+    for i in range(len(f)):
+        if f[i] != fprime[i]:
+            print(f"pos {i}: expected {f[i]}, got {fprime[i]}", file=outfile)
+    # print(f"{potentially_incorrect=}", file=outfile)
+    # print("\n=============================\n")
+
+outfile.close()
+
+print(f"Managed to fully recover {full_recovered_keys} keys")
+print(f"Average number of errors is {np.average(differences_arr)}")
