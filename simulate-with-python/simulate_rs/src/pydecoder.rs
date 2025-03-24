@@ -155,7 +155,7 @@ macro_rules! __register_py_decoder_special_impl {
             }
 
             /// sum product algorithm
-            fn decode(&self, py: Python<'_>, py_channel_output: PyReadonlyArray2<FloatType>, py_channel_output_comb: PyReadonlyArray2<FloatType>) -> Result<Vec<i8>> {
+            fn _decode_impl(&self, py: Python<'_>, py_channel_output: PyReadonlyArray2<FloatType>, py_channel_output_comb: PyReadonlyArray2<FloatType>) -> Result<(Vec<[FloatType; BSIZE]>, Vec<i8>)> {
                 let py_channel_output = py_channel_output.as_array();
                 let py_channel_output_comb = py_channel_output_comb.as_array();
                 let R = py_channel_output_comb.dim().0;
@@ -179,6 +179,16 @@ macro_rules! __register_py_decoder_special_impl {
                     let channel_llr_comb = CustomDecoder::into_log_domain(&channel_output_comb);
                     self.decoder.sum_product_nw(channel_llr, channel_llr_comb)
                 })
+            }
+
+            fn decode_hard(&self, py: Python<'_>, py_channel_output: PyReadonlyArray2<FloatType>, py_channel_output_comb: PyReadonlyArray2<FloatType>) -> Result<Vec<i8>> {
+                let (_, hard_decision) = self._decode_impl(py, py_channel_output, py_channel_output_comb)?;
+                Ok(hard_decision)
+            }
+
+            fn decode_with_pr(&self, py: Python<'_>, py_channel_output: PyReadonlyArray2<FloatType>, py_channel_output_comb: PyReadonlyArray2<FloatType>) -> Result<Vec<[FloatType; BSIZE]>> {
+                let (probs, _) = self._decode_impl(py, py_channel_output, py_channel_output_comb)?;
+                Ok(probs)
             }
         }
 

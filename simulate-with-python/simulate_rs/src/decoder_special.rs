@@ -885,7 +885,7 @@ impl<
     // Note: the implementation can't handle impossible values, meaning that 
     // channel_llr and channel_llr_comb should not contain -inf. That's because we
     // always assume the algorithm will be used for the imperfect oracle
-    pub fn sum_product_nw(&self, channel_llr: Vec<QaryLlrs<BSIZE>>, channel_llr_comb: Vec<QaryLlrs<COMB_SIZE>>) -> Result<Vec<BType>> {
+    pub fn sum_product_nw(&self, channel_llr: Vec<QaryLlrs<BSIZE>>, channel_llr_comb: Vec<QaryLlrs<COMB_SIZE>>) -> Result<(Vec<[FloatType; BSIZE]>, Vec<BType>)> {
         check_all_finite_assert(&channel_llr, "channel_llr");
         check_all_finite_assert(&channel_llr_comb, "channel_llr_comb");
 
@@ -896,7 +896,6 @@ impl<
         let mut edges_comb = self.edges_comb.clone();
         
         let BVARS = self.N - self.R; // number of B-variables
-        let mut hard_decision = vec![BType::zero(); BVARS];
         let SW = self.DC - 1; // each check node has SW B-variables + 1 BSUM variable
 
         // 1, 2: Initialize the channel values (steps are based on https://ieeexplore.ieee.org/abstract/document/5610969)
@@ -1042,6 +1041,8 @@ impl<
             
         }
 
+        let mut hard_decision = vec![BType::zero(); BVARS];
+        let mut final_llrs = Vec::with_capacity(BVARS);
         // println!("FINAL DECISION");
         for (var_idx, var) in (0..).zip(&*vn) {
             let mut sum: QaryLlrs<BSIZE> = debug_unwrap!(var.channel);
@@ -1050,10 +1051,42 @@ impl<
                 sum = P::add_with_mult_by_parity(&sum, &incoming, self.parity_check[&key]);
             }
 
+            final_llrs.push(Self::into_probability_domain(&sum.0));
             hard_decision[var_idx as usize] = C::i2b::<B>(Self::arg_max::<BSIZE>(sum));
         }
 
-        Ok(hard_decision)
+        Ok((final_llrs, hard_decision))
+    }
+
+    pub fn into_probability_domain<const T: usize>(llr: &[FloatType; T]) -> [FloatType; T] {
+        let mut probs = [0.0; T];
+
+        // 1. Find the max value (should be zero ideally, but still useful for stability)
+        let mut max_val = FloatType::NEG_INFINITY;
+        for &v in llr.iter() {
+            if v.is_finite() && v > max_val {
+                max_val = v;
+            }
+        }
+
+        // 2. Compute exp(llr[i] - max) to avoid overflow
+        let mut sum = 0.0;
+        for (i, &v) in llr.iter().enumerate() {
+            let prob = (v - max_val).exp();
+            probs[i] = prob;
+            sum += prob;
+        }
+
+        // 3. Normalize
+        if sum == 0.0 {
+            probs.fill(1.0 / T as FloatType); // fallback: uniform
+        } else {
+            for val in probs.iter_mut() {
+                *val /= sum;
+            }
+        }
+
+        probs
     }
 
     // Convert channel_output probabilities into (shifted) log probabilities.
