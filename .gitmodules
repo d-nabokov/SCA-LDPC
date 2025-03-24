@@ -1,3 +1,6 @@
 [submodule "dependencies/liboqs-rs-bindings"]
 	path = dependencies/liboqs-rs-bindings
 	url = https://github.com/atneit/liboqs-rs-bindings.git
+[submodule "simulate-with-python/ProtographLDPC"]
+	path = simulate-with-python/ProtographLDPC
+	url = https://github.com/shubhamchandak94/ProtographLDPC.git
