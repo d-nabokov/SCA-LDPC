@@ -30,6 +30,10 @@ def process_file(filename, n, check_weight):
     single_check_idxs = []
     single_check_distr = []
 
+    col_idx = None
+    pred_col_idx = None
+    last_single_index = None
+
     # read lines in blocks of 2
     for i in range(0, len(lines), 2):
         indices = list(map(int, lines[i].strip().split(",")))
@@ -39,6 +43,13 @@ def process_file(filename, n, check_weight):
         if len(probabilities) == len(indices) * 2 + 1 and len(indices) < check_weight:
             offset = check_weight - len(indices)
             probabilities = [0.0] * offset + probabilities + [0.0] * offset
+
+        if i == 0:
+            col_idx = indices[0]
+
+        if pred_col_idx is None and len(indices) == 2:
+            pred_col_idx = col_idx - last_single_index + 1
+        last_single_index = indices[0]
 
         if MOVE_SINGLE_CHECKS_TO_APRIOR and len(indices) == 1:
             single_check_idxs.append(indices[0])
@@ -58,7 +69,15 @@ def process_file(filename, n, check_weight):
             matrix[i, index] = 1
         matrix[i, n + i] = -1
 
-    return matrix, index_lines, probability_lists, single_check_idxs, single_check_distr
+    return (
+        matrix,
+        index_lines,
+        probability_lists,
+        single_check_idxs,
+        single_check_distr,
+        col_idx,
+        pred_col_idx,
+    )
 
 
 def parse_file(file_path):
@@ -134,11 +153,18 @@ def set_unreliable_to_second_most_probable(pmf, tau=0.01):
     return new_pmf.tolist()
 
 
-def list_of_unsatisfied_checks(f, variable_in_check_idxs, check_variables, col_idx):
+def list_of_unsatisfied_checks(
+    f, variable_in_check_idxs, check_variables, col_idx, pred_col_idx
+):
     BSUM = len(check_variables[0]) // 2
     unsatisfied_checks = []
     for variable_idxs, check_pmf in zip(variable_in_check_idxs, check_variables):
-        if variable_idxs[0] < col_idx:
+        is_relevant_part = True
+        for variable_idx in variable_idxs:
+            is_relevant_part = is_relevant_part and is_from_maj_voting_part(
+                variable_idx, col_idx, pred_col_idx
+            )
+        if not is_relevant_part:
             continue
         beta_u = 0
         for idx in variable_idxs:
@@ -171,7 +197,12 @@ def find_unreliable_block(s_pmfs, unreliable_idx):
 
 
 def decode_with_post_block_flip_optimization(
-    decoder, secret_variables, check_variables, variable_in_check_idxs, col_idx
+    decoder,
+    secret_variables,
+    check_variables,
+    variable_in_check_idxs,
+    col_idx,
+    pred_col_idx,
 ):
     s_decoded_pmfs_orig = decoder.decode_with_pr(secret_variables, check_variables)
     ret = s_decoded_pmfs_orig
@@ -180,7 +211,7 @@ def decode_with_post_block_flip_optimization(
     # potentially_incorrect = []
 
     unsatisfied_checks_orig = list_of_unsatisfied_checks(
-        fprime, variable_in_check_idxs, check_variables, col_idx
+        fprime, variable_in_check_idxs, check_variables, col_idx, pred_col_idx
     )
     # print(f"{unsatisfied_checks_orig=}")
     cur_unsatisfied_checks = unsatisfied_checks_orig
@@ -227,7 +258,7 @@ def decode_with_post_block_flip_optimization(
         fprime = list(np.argmax(pmf) - 1 for pmf in s_decoded_pmfs)
 
         unsatisfied_checks = list_of_unsatisfied_checks(
-            fprime, variable_in_check_idxs, check_variables, col_idx
+            fprime, variable_in_check_idxs, check_variables, col_idx, pred_col_idx
         )
         # print(f"{unsatisfied_checks=}")
         if len(unsatisfied_checks) < len(cur_unsatisfied_checks):
@@ -266,7 +297,7 @@ def decode_with_post_block_flip_optimization(
         #         fprime_new = list(np.argmax(pmf) - 1 for pmf in s_decoded_pmfs_new)
 
         #         unsatisfied_checks_new = list_of_unsatisfied_checks(
-        #             fprime_new, variable_in_check_idxs, check_variables, col_idx
+        #             fprime_new, variable_in_check_idxs, check_variables, col_idx, pred_col_idx
         #         )
         #         print("AAAAAAAAAAAAAA")
         #         print(f"{unsatisfied_checks_new=}")
@@ -298,6 +329,10 @@ def decode_with_post_block_flip_optimization(
     return ret
 
 
+def is_from_maj_voting_part(i, col_idx, pred_col_idx):
+    return not ((col_idx - pred_col_idx + 1) <= i <= col_idx)
+
+
 # argv = sys.argv
 # if len(argv) < 3:
 #     print("Usage: <program> <prob_file> <out_file> [<LDPC_iterations>]")
@@ -311,7 +346,7 @@ filename_pattern = (
 
 keys, collisions = parse_file(prob_filename)
 
-keys_to_test = range(0, 20)
+keys_to_test = range(0, 100)
 
 iterations = 10000
 # if len(argv) >= 4:
@@ -327,6 +362,8 @@ f_zero_prob = (p - w) / p
 f_one_prob = (1 - f_zero_prob) / 2
 
 differences_arr = []
+maj_voting_part_errors_arr = []
+non_maj_voting_part_errors_arr = []
 full_recovered_keys = 0
 for key_idx in keys_to_test:
     # print(f"working over key {key_idx} with collisions {collisions[key_idx]}")
@@ -341,8 +378,9 @@ for key_idx in keys_to_test:
         check_variables,
         single_check_idxs,
         single_check_distr,
+        col_idx,
+        pred_col_idx,
     ) = process_file(filename, p, check_weight)
-    col_idx = single_check_idxs[0]
 
     if H is None or check_variables is None:
         exit()
@@ -401,7 +439,7 @@ for key_idx in keys_to_test:
 
     # s_decoded_pmfs = decoder.decode_with_pr(secret_variables, check_variables)
     # s_decoded_pmfs = decode_with_post_block_flip_optimization(
-    #     decoder, secret_variables, check_variables, variable_in_check_idxs, col_idx
+    #     decoder, secret_variables, check_variables, variable_in_check_idxs, col_idx, pred_col_idx
     # )
     # for i, pmf in enumerate(s_decoded_pmfs):
     #     print(f"{i}: {pmf}")
@@ -442,7 +480,12 @@ for key_idx in keys_to_test:
     # print(f"{unsatisfied_checks=}")
 
     s_decoded_pmfs = decode_with_post_block_flip_optimization(
-        decoder, secret_variables, check_variables, variable_in_check_idxs, col_idx
+        decoder,
+        secret_variables,
+        check_variables,
+        variable_in_check_idxs,
+        col_idx,
+        pred_col_idx,
     )
     # super_unreliable = list(
     #     idx
@@ -457,13 +500,29 @@ for key_idx in keys_to_test:
     differences_arr.append(differences)
 
     print(f"For key {key_idx} have total {differences} errors:", file=outfile)
+    maj_voting_part_errors = 0
+    non_maj_voting_part_errors = 0
     for i in range(len(f)):
         if f[i] != fprime[i]:
-            print(f"pos {i}: expected {f[i]}, got {fprime[i]}", file=outfile)
+            if is_from_maj_voting_part(i, col_idx, pred_col_idx):
+                maj_voting_part_errors += 1
+                ending = "from majority"
+            else:
+                non_maj_voting_part_errors += 1
+                ending = "from paired"
+            print(f"pos {i}: expected {f[i]}, got {fprime[i]};  {ending}", file=outfile)
+    maj_voting_part_errors_arr.append(maj_voting_part_errors)
+    non_maj_voting_part_errors_arr.append(non_maj_voting_part_errors)
     # print(f"{potentially_incorrect=}", file=outfile)
     # print("\n=============================\n")
 
 outfile.close()
 
 print(f"Managed to fully recover {full_recovered_keys} keys")
-print(f"Average number of errors is {np.average(differences_arr)}")
+print(
+    f"Average number of errors from majority voting part is {np.average(maj_voting_part_errors_arr)}"
+)
+print(
+    f"Average number of errors from non majority voting part is {np.average(non_maj_voting_part_errors_arr)}"
+)
+print(f"Average number of errors total is {np.average(differences_arr)}")
