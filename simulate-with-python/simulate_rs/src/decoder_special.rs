@@ -489,7 +489,8 @@ pub struct DecoderSpecial<
     vn: Vec<VariableNode<BSIZE>>,
     /// List of BSUM-Variable nodes
     vn_comb: Vec<VariableNode<COMB_SIZE>>,
-    /// List of Check nodes, each node contain DC-1 B-variables and 1 BSUM-variable
+    /// List of Check nodes, each node contains at most DC-1 B-variables
+    /// and 1 BSUM-variable
     cn: Vec<CheckNode>,
     /// Number of iterations to perform in the decoder    
     max_iter: u32,
@@ -517,21 +518,6 @@ fn normalize_log_probs(log_probs: &mut [FloatType]) {
     let lse = log_probs.iter().ln_sum_exp();
     for lp in log_probs.iter_mut() {
         *lp -= lse;
-    }
-}
-
-fn check_all_finite_assert<const Q: usize>(
-    llrs: &[QaryLlrs<Q>],
-    name: &str,
-) {
-    for (i, qllr) in llrs.iter().enumerate() {
-        for (j, &val) in qllr.0.iter().enumerate() {
-            assert!(
-                val.is_finite(),
-                "Found non-finite value in {} at index ({}, {}): {}",
-                name, i, j, val
-            );
-        }
     }
 }
 
@@ -838,6 +824,8 @@ impl<
 
             for ((beta_ij, d), alpha_ij) in beta_i.iter_mut().zip(d_values).zip(&alpha_i) {
                 let d_idx = C::b2i::<B>(*d);
+                // TODO: Very important! if some symbols are impossible, i.e. equal to -inf, then
+                // approach with subtraction is not correct, need to actually compute they "fairly"
                 let c2v_value = sum_of_alpha - alpha_ij.0[d_idx];
                 beta_ij.0[d_idx] = beta_ij.0[d_idx].ln_add_exp(c2v_value);
             }
@@ -878,6 +866,34 @@ impl<
             .fold(0.0, FloatType::max)
     }
 
+    fn check_all_finite_assert<const Q: usize>(&self, llrs: &[QaryLlrs<Q>]) {
+        for (i, qllr) in llrs.iter().enumerate() {
+            for (j, &val) in qllr.0.iter().enumerate() {
+                assert!(
+                    val.is_finite(),
+                    "Found non-finite value in B variable at index ({}, {}): {}",
+                    i, j, val
+                );
+            }
+        }
+    }
+
+    fn check_all_finite_assert_comb<const Q: usize>(&self, llrs: &[QaryLlrs<Q>]) {
+        let SW = self.DC - 1;
+        for ((i, qllr), check) in llrs.iter().enumerate().zip(&self.cn) {
+            let num_nones = check.variable_idx.iter().rev().take_while(|&&x| x.is_none()).count();
+            let mut d_values_iter = SimpleDValueIterator::<BType>::new(BType::from(B).unwrap(), num_nones, SW);
+            while let Some(d_values) = d_values_iter.next() {
+                let d_comb_index = C::index_of_comb(d_values);
+                let val = qllr.0[d_comb_index];
+                assert!(
+                    val.is_finite(),
+                    "Found non-finite value in B variable at index ({}, {:?}): {}",
+                    i, d_values, val
+                )
+            }
+        }
+    }
 
     // Implements the sum product algorithm
     // Uses IDS scheduler, in particular, Node-wise
@@ -886,8 +902,8 @@ impl<
     // channel_llr and channel_llr_comb should not contain -inf. That's because we
     // always assume the algorithm will be used for the imperfect oracle
     pub fn sum_product_nw(&self, channel_llr: Vec<QaryLlrs<BSIZE>>, channel_llr_comb: Vec<QaryLlrs<COMB_SIZE>>) -> Result<(Vec<[FloatType; BSIZE]>, Vec<BType>)> {
-        check_all_finite_assert(&channel_llr, "channel_llr");
-        check_all_finite_assert(&channel_llr_comb, "channel_llr_comb");
+        self.check_all_finite_assert(&channel_llr);
+        self.check_all_finite_assert_comb(&channel_llr_comb);
 
         // Clone the states that we need to mutate
         let mut vn = self.vn.clone();
