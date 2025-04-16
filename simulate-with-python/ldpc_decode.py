@@ -1,3 +1,4 @@
+import logging
 import os.path
 import re
 import sys
@@ -6,12 +7,8 @@ import coloredlogs
 import numpy as np
 from simulate_rs import DecoderNTRUW2, DecoderNTRUW4, DecoderNTRUW6
 
-coloredlogs.install(level="DEBUG", logger=None)
-
-# new logger for this module
-import logging
-
 logger = logging.getLogger(__name__.replace("__", ""))
+coloredlogs.install(level="INFO", logger=logger)
 
 MOVE_SINGLE_CHECKS_TO_APRIOR = True
 
