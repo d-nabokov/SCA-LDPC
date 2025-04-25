@@ -16,3 +16,4 @@ test-hqc.key
 *.fdb_latexmk
 *.synctex.gz
 *.pgf
+*.txt

@@ -293,7 +293,10 @@ def make_random_ldpc_parity_check_matrix_with_identity(n, weight, seed=None):
 # generate tall matrix with n variables, k check nodes with fixed row_weight
 def generate_regular_ldpc_as_tanner(n, k, row_weight):
     # library can generate transposed matrix
-    ldpc_code = RegularLDPC([k, n, row_weight], "peg", verbose=False)
+    if k >= n:
+        ldpc_code = RegularLDPC([k, n, row_weight], "peg", verbose=False)
+    else:
+        ldpc_code = RegularLDPC([k, n, row_weight], "populate-columns", verbose=False)
     transposed_tanner = ldpc_code.tanner_graph
     tanner = [[] for _ in range(k)]
     for col_idx, row_idxs in transposed_tanner.items():
