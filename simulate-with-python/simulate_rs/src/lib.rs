@@ -51,20 +51,41 @@ fn simulate_rs(_py: Python, m: &PyModule) -> PyResult<()> {
 
     register_py_decoder_sum_distribution_class!(
         m <= DecoderNTRUW2 {
-            B: 2,
+            B: 1,
             SW: 2
         }
     );
 
     register_py_decoder_sum_distribution_class!(
         m <= DecoderNTRUW4 {
-            B: 2,
+            B: 1,
             SW: 4
         }
     );
 
     register_py_decoder_sum_distribution_class!(
         m <= DecoderNTRUW6 {
+            B: 1,
+            SW: 6
+        }
+    );
+
+    register_py_decoder_sum_distribution_class!(
+        m <= DecoderExtendedNTRUW2 {
+            B: 2,
+            SW: 2
+        }
+    );
+
+    register_py_decoder_sum_distribution_class!(
+        m <= DecoderExtendedNTRUW4 {
+            B: 2,
+            SW: 4
+        }
+    );
+
+    register_py_decoder_sum_distribution_class!(
+        m <= DecoderExtendedNTRUW6 {
             B: 2,
             SW: 6
         }

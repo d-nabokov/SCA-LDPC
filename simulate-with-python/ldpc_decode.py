@@ -1,3 +1,4 @@
+import inspect
 import logging
 import os.path
 import re
@@ -5,15 +6,68 @@ import sys
 
 import coloredlogs
 import numpy as np
-from simulate_rs import DecoderNTRUW2, DecoderNTRUW4, DecoderNTRUW6
+from simulate_rs import (
+    DecoderExtendedNTRUW2,
+    DecoderExtendedNTRUW4,
+    DecoderExtendedNTRUW6,
+    DecoderNTRUW2,
+    DecoderNTRUW4,
+    DecoderNTRUW6,
+)
 
 logger = logging.getLogger(__name__.replace("__", ""))
 coloredlogs.install(level="INFO", logger=logger)
 
 MOVE_SINGLE_CHECKS_TO_APRIOR = True
+USE_EXTENDED_VARIABLES = True
+
+if USE_EXTENDED_VARIABLES:
+    B = 2
+else:
+    B = 1
 
 
-def process_file(filename, n, check_weight):
+def extended_variables_indices(indices):
+    n = len(indices)
+    out = []
+    i = 0
+
+    while i < n:
+        # discover the length of the current consecutive (+1 mod p) run
+        run_len = 1
+        while (
+            i + run_len < n
+            and indices[i + run_len] == (indices[i + run_len - 1] + 1) % p
+        ):
+            run_len += 1
+
+        if run_len == 1:  # single, no pair
+            out.append(indices[i])
+        elif run_len == 2:  # clean (x, x+1) pair → keep only x+1
+            out.append(indices[i + 1])
+        else:  # run_len ≥ 3  → ambiguous
+            raise ValueError(
+                f"Ambiguous input: overlapping (x, x+1) pairs starting at "
+                f"position {i} ({indices[i]}, …)"
+            )
+
+        i += run_len  # step over the whole run
+    return out
+
+
+def resize_pmf(pmf, target_b):
+    target_size = 2 * target_b + 1
+    if len(pmf) > target_size:
+        offset = (len(pmf) - target_size) // 2
+        return pmf[offset:-offset]
+    elif len(pmf) < target_size:
+        offset = (target_size - len(pmf)) // 2
+        return [0.0] * offset + pmf + [0.0] * offset
+    else:
+        return pmf
+
+
+def process_cond_prob_file(filename, n, check_weight):
     if not os.path.isfile(filename):
         print("File does not exist")
         return None, None
@@ -35,6 +89,11 @@ def process_file(filename, n, check_weight):
     for i in range(0, len(lines), 2):
         indices = list(map(int, lines[i].strip().split(",")))
         probabilities = list(map(float, lines[i + 1].strip().split(",")))
+
+        assert len(list(x for x in probabilities if x != 0)) == len(indices) * 2 + 1
+
+        if USE_EXTENDED_VARIABLES:
+            indices = extended_variables_indices(indices)
 
         # support the case where extra probabilities are not printed
         if len(probabilities) == len(indices) * 2 + 1 and len(indices) < check_weight:
@@ -77,7 +136,7 @@ def process_file(filename, n, check_weight):
     )
 
 
-def parse_file(file_path):
+def parse_key_info_file(file_path):
     keys = []
     collisions = []
 
@@ -335,15 +394,16 @@ def is_from_maj_voting_part(i, col_idx, pred_col_idx):
 #     print("Usage: <program> <prob_file> <out_file> [<LDPC_iterations>]")
 #     exit()
 
-prob_filename = "conditinal probs/private_key_and_collision_info.bin"
+base_data_folder = "conditional probs"
+prob_filename = os.path.join(base_data_folder, "private_key_and_collision_info.bin")
 outfile = open("outfile.txt", "wt")
-filename_pattern = (
-    "conditinal probs/For NO_TESTS is {} alpha_u_and_conditional_probabilities.bin"
+filename_pattern = os.path.join(
+    base_data_folder, "For NO_TESTS is {} alpha_u_and_conditional_probabilities.bin"
 )
 
-keys, collisions = parse_file(prob_filename)
+keys, collisions = parse_key_info_file(prob_filename)
 
-keys_to_test = range(0, 100)
+keys_to_test = range(0, 30)
 
 iterations = 10000
 # if len(argv) >= 4:
@@ -352,7 +412,7 @@ iterations = 10000
 p = 761
 # weight of f
 w = 286
-check_weight = 2
+check_weight = 4
 
 # determine the prior distribution of coefficients of f
 f_zero_prob = (p - w) / p
@@ -377,7 +437,7 @@ for key_idx in keys_to_test:
         single_check_distr,
         col_idx,
         pred_col_idx,
-    ) = process_file(filename, p, check_weight)
+    ) = process_cond_prob_file(filename, p, check_weight)
 
     if H is None or check_variables is None:
         exit()
@@ -390,10 +450,6 @@ for key_idx in keys_to_test:
         print(f"skipping too large predicted collision index for {key_idx}")
         continue
 
-    # print(len(H), len(H[0]))
-    # print(max_row_weight, max_col_weight)
-    # print(f"min={np.min(col_counts)}; variance = {np.var(col_counts)}")
-
     secret_variables = []
 
     single_checks = sorted(zip(single_check_idxs, single_check_distr))
@@ -404,11 +460,12 @@ for key_idx in keys_to_test:
             and single_checks[single_checks_idx][0] == i
         ):
             distr = single_checks[single_checks_idx][1]
-            l = len(distr)
-            secret_variables.append(distr[l // 2 - 1 : l // 2 + 2])
+            secret_variables.append(resize_pmf(distr, B))
             single_checks_idx += 1
         else:
-            secret_variables.append([f_one_prob, f_zero_prob, f_one_prob])
+            secret_variables.append(
+                resize_pmf([f_one_prob, f_zero_prob, f_one_prob], B)
+            )
 
     # convert to numpy arrays for Rust be able to work on the arrays
     secret_variables = np.array(secret_variables, dtype=np.float32)
@@ -418,21 +475,28 @@ for key_idx in keys_to_test:
         secret_variables = secret_variables[:, ::-1]
         check_variables = check_variables[:, ::-1]
 
-    # print("Creating decoder")
-    if check_weight == 2:
-        decoder = DecoderNTRUW2(
-            H.astype("int8"), max_col_weight, max_row_weight, iterations
-        )
-    elif check_weight == 4:
-        decoder = DecoderNTRUW4(
-            H.astype("int8"), max_col_weight, max_row_weight, iterations
-        )
-    elif check_weight == 6:
-        decoder = DecoderNTRUW6(
-            H.astype("int8"), max_col_weight, max_row_weight, iterations
-        )
+    # Rust does not accept zero values, set them to very small probability
+    epsilon = 1e-20
+    secret_variables[secret_variables == 0] = epsilon
+    check_variables[check_variables == 0] = epsilon
+
+    decoder_map = {
+        (False, 2): DecoderNTRUW2,
+        (False, 4): DecoderNTRUW4,
+        (False, 6): DecoderNTRUW6,
+        (True, 2): DecoderExtendedNTRUW2,
+        (True, 4): DecoderExtendedNTRUW4,
+        (True, 6): DecoderExtendedNTRUW6,
+    }
+    if USE_EXTENDED_VARIABLES:
+        ldpc_check_weight = check_weight // 2
     else:
+        ldpc_check_weight = check_weight
+    if (USE_EXTENDED_VARIABLES, ldpc_check_weight) not in decoder_map:
         raise ValueError("Not supported check weight")
+    decoder = decoder_map[(USE_EXTENDED_VARIABLES, ldpc_check_weight)](
+        H.astype("int8"), max_col_weight, max_row_weight, iterations
+    )
 
     # s_decoded_pmfs = decoder.decode_with_pr(secret_variables, check_variables)
     # s_decoded_pmfs = decode_with_post_block_flip_optimization(
@@ -476,50 +540,97 @@ for key_idx in keys_to_test:
     #                 print(f"{idx} is unreliable")
     # print(f"{unsatisfied_checks=}")
 
-    s_decoded_pmfs = decode_with_post_block_flip_optimization(
-        decoder,
-        secret_variables,
-        check_variables,
-        variable_in_check_idxs,
-        col_idx,
-        pred_col_idx,
-    )
+    # s_decoded_pmfs = decode_with_post_block_flip_optimization(
+    #     decoder,
+    #     secret_variables,
+    #     check_variables,
+    #     variable_in_check_idxs,
+    #     col_idx,
+    #     pred_col_idx,
+    # )
+    s_decoded_pmfs = decoder.decode_with_pr(secret_variables, check_variables)
     # super_unreliable = list(
     #     idx
     #     for idx in range(col_idx, len(s_decoded_pmfs))
     #     if is_unreliable(s_decoded_pmfs[idx], 0.6)
     # )
     # print(f"very unreliable coefs: {super_unreliable}")
+    fprime = list(np.argmax(pmf) - B for pmf in s_decoded_pmfs)
+    # differences = sum(f[i] != fprime[i] for i in range(len(f)))
+    # if differences == 0:
+    #     full_recovered_keys += 1
+    # differences_arr.append(differences)
+
+    print(f"{col_idx=}")
+    for i in range(p):
+        if i > 0 and i <= col_idx:
+            expect = f[i]
+        else:
+            expect = f[i] + f[(i - 1) % p]
+        if expect != fprime[i]:
+            print(f"{i}: expected {expect}, got {fprime[i]}, pmf = {s_decoded_pmfs[i]}")
+
+    # getting from extended representation back to normal
+    num_extended = p - col_idx
+    matrix = np.zeros((num_extended, p + num_extended), dtype=int)
+    for row_idx, i in enumerate(range(col_idx + 1, p + 1)):
+        matrix[row_idx, i % p] = 1
+        matrix[row_idx, (i - 1) % p] = 1
+        matrix[row_idx, p + row_idx] = -1
+    row_counts = np.count_nonzero(matrix, axis=1)
+    max_row_weight = np.max(row_counts)
+    col_counts = np.count_nonzero(matrix, axis=0)
+    max_col_weight = np.max(col_counts)
+
+    secret_variables = []
+    for i in range(p):
+        if i > 0 and i <= col_idx:
+            pmf = s_decoded_pmfs[i]
+            secret_variables.append(resize_pmf(pmf, 1))
+        else:
+            secret_variables.append(
+                resize_pmf([f_one_prob, f_zero_prob, f_one_prob], 1)
+            )
+    secret_variables = np.array(secret_variables, dtype=np.float32)
+    check_variables = s_decoded_pmfs[col_idx + 1 :] + s_decoded_pmfs[0:1]
+    check_variables = np.array(check_variables, dtype=np.float32)
+    decoder = decoder_map[(False, 2)](
+        matrix.astype("int8"), max_col_weight, max_row_weight, iterations
+    )
+    s_decoded_pmfs = decoder.decode_with_pr(secret_variables, check_variables)
+    print("Switching to non-extended representation")
     fprime = list(np.argmax(pmf) - 1 for pmf in s_decoded_pmfs)
-    differences = sum(f[i] != fprime[i] for i in range(len(f)))
-    if differences == 0:
-        full_recovered_keys += 1
+    differences = 0
+    for i in range(p):
+        if f[i] != fprime[i]:
+            differences += 1
+            print(f"{i}: expected {f[i]}, got {fprime[i]}, pmf = {s_decoded_pmfs[i]}")
     differences_arr.append(differences)
 
     print(f"For key {key_idx} have total {differences} errors:", file=outfile)
-    maj_voting_part_errors = 0
-    non_maj_voting_part_errors = 0
-    for i in range(len(f)):
-        if f[i] != fprime[i]:
-            if is_from_maj_voting_part(i, col_idx, pred_col_idx):
-                maj_voting_part_errors += 1
-                ending = "from majority"
-            else:
-                non_maj_voting_part_errors += 1
-                ending = "from paired"
-            print(f"pos {i}: expected {f[i]}, got {fprime[i]};  {ending}", file=outfile)
-    maj_voting_part_errors_arr.append(maj_voting_part_errors)
-    non_maj_voting_part_errors_arr.append(non_maj_voting_part_errors)
+    # maj_voting_part_errors = 0
+    # non_maj_voting_part_errors = 0
+    # for i in range(len(f)):
+    #     if f[i] != fprime[i]:
+    #         if is_from_maj_voting_part(i, col_idx, pred_col_idx):
+    #             maj_voting_part_errors += 1
+    #             ending = "from majority"
+    #         else:
+    #             non_maj_voting_part_errors += 1
+    #             ending = "from paired"
+    #         print(f"pos {i}: expected {f[i]}, got {fprime[i]};  {ending}", file=outfile)
+    # maj_voting_part_errors_arr.append(maj_voting_part_errors)
+    # non_maj_voting_part_errors_arr.append(non_maj_voting_part_errors)
     # print(f"{potentially_incorrect=}", file=outfile)
     # print("\n=============================\n")
 
 outfile.close()
 
 print(f"Managed to fully recover {full_recovered_keys} keys")
-print(
-    f"Average number of errors from majority voting part is {np.average(maj_voting_part_errors_arr)}"
-)
-print(
-    f"Average number of errors from non majority voting part is {np.average(non_maj_voting_part_errors_arr)}"
-)
+# print(
+#     f"Average number of errors from majority voting part is {np.average(maj_voting_part_errors_arr)}"
+# )
+# print(
+#     f"Average number of errors from non majority voting part is {np.average(non_maj_voting_part_errors_arr)}"
+# )
 print(f"Average number of errors total is {np.average(differences_arr)}")

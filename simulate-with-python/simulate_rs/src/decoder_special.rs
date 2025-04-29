@@ -1118,7 +1118,7 @@ impl<
         for (var, msg) in channel_output.iter().zip(llrs.iter_mut()) {
             let sum: FloatType = var.iter().sum();
             assert!((1.0 - EPSILON..=1.0 + EPSILON).contains(&sum),
-                "Probabilities must sum to ~1.0; got {}", sum);
+                "Probabilities must sum to ~1.0; got {}; pmf = {:?}", sum, var);
             let max = var
                 .iter()
                 .copied()
