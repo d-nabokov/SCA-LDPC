@@ -82,8 +82,8 @@ def process_cond_prob_file(filename, n, check_weight):
     single_check_distr = []
 
     col_idx = None
-    pred_col_idx = None
-    last_single_index = None
+    # pred_col_idx = None
+    # last_single_index = None
 
     # read lines in blocks of 2
     for i in range(0, len(lines), 2):
@@ -103,9 +103,9 @@ def process_cond_prob_file(filename, n, check_weight):
         if i == 0:
             col_idx = indices[0]
 
-        if pred_col_idx is None and len(indices) == 2:
-            pred_col_idx = col_idx - last_single_index + 1
-        last_single_index = indices[0]
+        # if pred_col_idx is None and len(indices) == 2:
+        #     pred_col_idx = col_idx - last_single_index + 1
+        # last_single_index = indices[0]
 
         if MOVE_SINGLE_CHECKS_TO_APRIOR and len(indices) == 1:
             single_check_idxs.append(indices[0])
@@ -132,7 +132,6 @@ def process_cond_prob_file(filename, n, check_weight):
         single_check_idxs,
         single_check_distr,
         col_idx,
-        pred_col_idx,
     )
 
 
@@ -436,7 +435,6 @@ for key_idx in keys_to_test:
         single_check_idxs,
         single_check_distr,
         col_idx,
-        pred_col_idx,
     ) = process_cond_prob_file(filename, p, check_weight)
 
     if H is None or check_variables is None:
