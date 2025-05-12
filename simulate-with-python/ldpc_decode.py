@@ -81,7 +81,7 @@ def process_cond_prob_file(filename, n, check_weight):
     single_check_idxs = []
     single_check_distr = []
 
-    col_idx = None
+    # col_idx = None
     # pred_col_idx = None
     # last_single_index = None
 
@@ -100,8 +100,8 @@ def process_cond_prob_file(filename, n, check_weight):
             offset = check_weight - len(indices)
             probabilities = [0.0] * offset + probabilities + [0.0] * offset
 
-        if i == 0:
-            col_idx = indices[0]
+        # if i == 0:
+        #     col_idx = indices[0]
 
         # if pred_col_idx is None and len(indices) == 2:
         #     pred_col_idx = col_idx - last_single_index + 1
@@ -131,7 +131,6 @@ def process_cond_prob_file(filename, n, check_weight):
         probability_lists,
         single_check_idxs,
         single_check_distr,
-        col_idx,
     )
 
 
@@ -434,8 +433,8 @@ for key_idx in keys_to_test:
         check_variables,
         single_check_idxs,
         single_check_distr,
-        col_idx,
     ) = process_cond_prob_file(filename, p, check_weight)
+    col_idx = collisions[key_idx][0][0]
 
     if H is None or check_variables is None:
         exit()
@@ -595,6 +594,9 @@ for key_idx in keys_to_test:
     decoder = decoder_map[(False, 2)](
         matrix.astype("int8"), max_col_weight, max_row_weight, iterations
     )
+
+    secret_variables[secret_variables == 0] = epsilon
+    check_variables[check_variables == 0] = epsilon
     s_decoded_pmfs = decoder.decode_with_pr(secret_variables, check_variables)
     print("Switching to non-extended representation")
     fprime = list(np.argmax(pmf) - 1 for pmf in s_decoded_pmfs)
