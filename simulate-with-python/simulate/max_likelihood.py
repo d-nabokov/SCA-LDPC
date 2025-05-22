@@ -81,34 +81,30 @@ def pr_cond_yx(y, x, pr_oracle):
     return res
 
 
-def pr_y(y, pr_oracle, secret_range_func, coding, distrib_secret, sum_weight):
+def pr_y(y, pr_oracle, coding, s_pmf_array):
     # compute Pr[Y = y]
     res = 0
-    for s in secret_range_func(sum_weight):
-        xprime = coding[s]
-        pr_xprime_y = distrib_secret[s] * pr_cond_yx(y, xprime, pr_oracle)
+    for x, pr in zip(coding, s_pmf_array):
+        pr_xprime_y = pr * pr_cond_yx(y, x, pr_oracle)
         res += pr_xprime_y
     return res
 
 
 def pr_cond_xy(
-    s,
+    x,
     y,
     pr_oracle,
-    secret_range_func,
+    pr_x,
     coding,
-    distrib_secret,
-    sum_weight,
+    s_pmf_array,
     pr_y_saved=None,
 ):
-    # compute Pr[X = coding[s] | Y = y]
+    # compute Pr[X = x | Y = y] where x = coding[s]
     if pr_y_saved is None:
-        pr_y_saved = pr_y(
-            y, pr_oracle, secret_range_func, coding, distrib_secret, sum_weight
-        )
+        pr_y_saved = pr_y(y, pr_oracle, coding, s_pmf_array)
     if pr_y_saved == 0:
         return 0
-    return pr_cond_yx(y, coding[s], pr_oracle) * distrib_secret[s] / pr_y_saved
+    return pr_cond_yx(y, x, pr_oracle) * pr_x / pr_y_saved
 
 
 def pr_of_y_from_prediction(pred_y, y):
@@ -121,39 +117,35 @@ def pr_of_y_from_prediction(pred_y, y):
     return res
 
 
-def s_distribution_from_hard_y(
-    y, pr_oracle, secret_range_func, coding, distrib_secret, sum_weight
-):
+# Compute Pr[S = s | Y = y] for a given y. Assume that coding have the same number
+# of bits for all s
+def s_distribution_from_hard_y(y, pr_oracle, coding, s_pmf_array):
+    assert coding is not None and len(coding) >= 1 and len(coding[0]) >= 1
     distr = [0] * len(coding)
-    for i, s in enumerate(secret_range_func(sum_weight)):
-        pr_y_saved = pr_y(
-            y, pr_oracle, secret_range_func, coding, distrib_secret, sum_weight
-        )
+    for i, (x, pr) in enumerate(zip(coding, s_pmf_array)):
+        pr_y_saved = pr_y(y, pr_oracle, coding, s_pmf_array)
         distr[i] = pr_cond_xy(
-            s,
+            x,
             y,
             pr_oracle,
-            secret_range_func,
+            pr,
             coding,
-            distrib_secret,
-            sum_weight,
+            s_pmf_array,
             pr_y_saved,
         )
     return distr
 
-# Compute Pr[S = s | Y = y] for all possible y. Assume that coding have the same number of bits for
-# all s
+# Compute Pr[S = s | Y = y] for all possible y. Assume that coding have the same number
+# of bits for all s
 # return Pr[S = s | Y = y] and Pr[Y = y] for all y
-def s_distribution_for_all_y(pr_oracle, coding, secret_range_func, secret_prob_func):
+def s_distribution_for_all_y(pr_oracle, coding, s_pmf_array):
     assert coding is not None and len(coding) >= 1 and len(coding[0]) >= 1
     ybits = len(coding[0])
 
     res = np.zeros((2**ybits, len(coding)), dtype=np.float32)
-    for j, s in enumerate(secret_range_func()):
-        s_prob = secret_prob_func(s)
-        x = coding[j]
+    for j, (x, pr) in enumerate(zip(coding, s_pmf_array)):
         for i, y in enumerate(it.product(range(2), repeat=ybits)):
-            res[i][j] = s_prob * pr_cond_yx(y, x, pr_oracle)
+            res[i][j] = pr * pr_cond_yx(y, x, pr_oracle)
 
     # Compute Pr[Y = y]
     pr_of_y = np.sum(res, axis=1)
