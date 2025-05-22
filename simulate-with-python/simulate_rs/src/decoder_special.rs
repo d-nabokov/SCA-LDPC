@@ -260,7 +260,7 @@ where
 
     fn increment_d_values(&mut self) -> bool {
         if let Some(ref mut d_values) = self.d_values {
-            for i in 0..(self.SW - self.num_ignore) {
+            for i in (0..(self.SW - self.num_ignore)).rev() {
                 if d_values[i] < self.b {
                     d_values[i] += BType::from(1_usize).unwrap();
                     return true;
@@ -375,7 +375,7 @@ impl<
         let mut index = 0_usize;
         let mut multiplier = 1_usize;
 
-        for &d in d_values {
+        for &d in d_values.iter().rev() {
             index += Self::b2i::<B>(d) * multiplier;
             multiplier *= BSIZE;
         }
