@@ -31,35 +31,43 @@ else:
 
 
 def extended_variables_indices(indices):
-    n = len(indices)
+    """Collapse disjoint (x, x+1) pairs."""
     out = []
     i = 0
+    n = len(indices)
 
     while i < n:
-        # discover the length of the current consecutive (+1 mod p) run
-        run_len = 1
-        while (
-            i + run_len < n
-            and indices[i + run_len] == (indices[i + run_len - 1] + 1) % p
-        ):
-            run_len += 1
+        curr = indices[i]
 
-        if run_len == 1:  # single, no pair
-            out.append(indices[i])
-        elif run_len == 2:  # clean (x, x+1) pair → keep only x+1
-            out.append(indices[i + 1])
-        elif (
-            run_len == 3
-        ):  # (x, x+1) and (x+1, x+2) pairs put together into (x, x+1, x+2) → keep x+1 and x+2
-            out.append(indices[i + 1])
-            out.append(indices[i + 2])
-        else:  # run_len ≥ 4  → ambiguous
-            raise ValueError(
-                f"Ambiguous input: overlapping (x, x+1) pairs starting at "
-                f"position {i} ({indices})"
-            )
+        if i + 1 < n:
+            nxt = indices[i + 1]
 
-        i += run_len  # step over the whole run
+            # ──────────────────────────────────────────────────────────
+            # Special case produced by *u == col_idx* → [p‑1, 0].
+            # (0 followed immediately by p‑1).
+            # Keep *0* (the first) and consume both.
+            if curr == p - 1 and nxt == 0:
+                out.append(nxt)
+                i += 2
+                continue
+
+            # Generic ascending pair [x, x+1] coming from *u > col_idx*.
+            # Ensure it is **exactly** a pair and not the beginning of a
+            # longer run arising from two different *compute_alpha*
+            # calls (e.g. 3, 4, 5).
+            if nxt == (curr + 1) % p and not (
+                i + 2 < n and (indices[i + 2] % p) == (nxt + 1) % p
+            ):
+                out.append(nxt)
+                i += 2
+                continue
+
+        # Fallback: single element produced by *u < col_idx* or second
+        # element of a longer run (the first one has already been
+        # handled above).
+        out.append(curr)
+        i += 1
+
     return out
 
 
