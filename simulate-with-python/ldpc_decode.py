@@ -1,8 +1,11 @@
 import inspect
+import itertools as it
 import logging
 import os.path
 import re
 import sys
+from collections import defaultdict
+from math import prod
 
 import coloredlogs
 import numpy as np
@@ -45,10 +48,15 @@ def extended_variables_indices(indices):
             out.append(indices[i])
         elif run_len == 2:  # clean (x, x+1) pair → keep only x+1
             out.append(indices[i + 1])
-        else:  # run_len ≥ 3  → ambiguous
+        elif (
+            run_len == 3
+        ):  # (x, x+1) and (x+1, x+2) pairs put together into (x, x+1, x+2) → keep x+1 and x+2
+            out.append(indices[i + 1])
+            out.append(indices[i + 2])
+        else:  # run_len ≥ 4  → ambiguous
             raise ValueError(
                 f"Ambiguous input: overlapping (x, x+1) pairs starting at "
-                f"position {i} ({indices[i]}, …)"
+                f"position {i} ({indices})"
             )
 
         i += run_len  # step over the whole run
@@ -387,11 +395,20 @@ def is_from_maj_voting_part(i, col_idx, pred_col_idx):
     return not ((col_idx - pred_col_idx + 1) <= i <= col_idx)
 
 
+def sum_secret_distr(distr, weight):
+    B = (len(distr) - 1) // 2
+    d = defaultdict(float)
+    for values in it.product(range(-B, B + 1), repeat=weight):
+        d[sum(values)] += prod(distr[val] for val in values)
+    return d
+
+
 # argv = sys.argv
 # if len(argv) < 3:
 #     print("Usage: <program> <prob_file> <out_file> [<LDPC_iterations>]")
 #     exit()
 
+# base_data_folder = "conditional probs pairs only"
 base_data_folder = "conditional probs"
 prob_filename = os.path.join(base_data_folder, "private_key_and_collision_info.bin")
 outfile = open("outfile.txt", "wt")
@@ -415,6 +432,9 @@ check_weight = 4
 # determine the prior distribution of coefficients of f
 f_zero_prob = (p - w) / p
 f_one_prob = (1 - f_zero_prob) / 2
+
+f_distr = {-1: f_one_prob, 0: f_zero_prob, 1: f_one_prob}
+prior_distr = list(list(sum_secret_distr(f_distr, i + 1).values()) for i in range(2))
 
 differences_arr = []
 maj_voting_part_errors_arr = []
@@ -460,9 +480,17 @@ for key_idx in keys_to_test:
             secret_variables.append(resize_pmf(distr, B))
             single_checks_idx += 1
         else:
-            secret_variables.append(
-                resize_pmf([f_one_prob, f_zero_prob, f_one_prob], B)
-            )
+            # If we don't query a single check directly, then usually we just put prior ternary pmf
+            # of coefficients of f. However, with extended variables we sometimes need to put pmf
+            # of f[i] + f[i+1]
+            if i > 0 and i <= col_idx:
+                prior_coef_weight = 1
+            elif USE_EXTENDED_VARIABLES:
+                prior_coef_weight = 2
+            else:
+                prior_coef_weight = 1
+            prior_coef_distr = prior_distr[prior_coef_weight - 1]
+            secret_variables.append(resize_pmf(prior_coef_distr, B))
 
     # convert to numpy arrays for Rust be able to work on the arrays
     secret_variables = np.array(secret_variables, dtype=np.float32)
