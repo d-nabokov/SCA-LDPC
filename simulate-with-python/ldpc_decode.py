@@ -88,6 +88,10 @@ def process_cond_prob_file(filename, n, check_weight):
         print("File does not exist")
         return None, None
 
+    beta_distrs = list(
+        list(sum_secret_distr(f_distr, i + 1).values()) for i in range(check_weight)
+    )
+
     with open(filename, "r") as file:
         lines = file.readlines()
 
@@ -107,6 +111,8 @@ def process_cond_prob_file(filename, n, check_weight):
         probabilities = list(map(float, lines[i + 1].strip().split(",")))
 
         assert len(list(x for x in probabilities if x != 0)) == len(indices) * 2 + 1
+
+        original_indices_len = len(indices)
 
         if USE_EXTENDED_VARIABLES:
             indices = extended_variables_indices(indices)
@@ -128,6 +134,16 @@ def process_cond_prob_file(filename, n, check_weight):
             single_check_distr.append(probabilities)
         else:
             index_lines.append(indices)
+            # For check variables LDPC should take Pr[y | \sum s_i], but currently
+            # in the file we have Pr[\sum s_i | y] which is essentially computed
+            # during belief propagation. So, here we divide each probability by
+            # Pr[\sum s_i] to get expected value
+            probabilities = np.array(probabilities)
+            offset = check_weight - original_indices_len
+            beta_distr = beta_distrs[original_indices_len - 1]
+            for j in range(original_indices_len * 2 + 1):
+                probabilities[j + offset] /= beta_distr[j]
+            probabilities /= sum(probabilities)
             probability_lists.append(probabilities)
 
     # Determine the number of parity checks
@@ -426,7 +442,7 @@ filename_pattern = os.path.join(
 
 keys, collisions = parse_key_info_file(prob_filename)
 
-keys_to_test = range(0, 30)
+keys_to_test = range(0, 100)
 
 iterations = 10000
 # if len(argv) >= 4:
@@ -594,14 +610,14 @@ for key_idx in keys_to_test:
     #     full_recovered_keys += 1
     # differences_arr.append(differences)
 
-    print(f"{col_idx=}")
+    # print(f"{key_idx=}: {col_idx=}")
     for i in range(p):
         if i > 0 and i <= col_idx:
             expect = f[i]
         else:
             expect = f[i] + f[(i - 1) % p]
-        if expect != fprime[i]:
-            print(f"{i}: expected {expect}, got {fprime[i]}, pmf = {s_decoded_pmfs[i]}")
+        # if expect != fprime[i]:
+        #     print(f"{i}: expected {expect}, got {fprime[i]}, pmf = {s_decoded_pmfs[i]}")
 
     # getting from extended representation back to normal
     num_extended = p - col_idx
@@ -634,13 +650,15 @@ for key_idx in keys_to_test:
     secret_variables[secret_variables == 0] = epsilon
     check_variables[check_variables == 0] = epsilon
     s_decoded_pmfs = decoder.decode_with_pr(secret_variables, check_variables)
-    print("Switching to non-extended representation")
+    # print("Switching to non-extended representation")
     fprime = list(np.argmax(pmf) - 1 for pmf in s_decoded_pmfs)
     differences = 0
     for i in range(p):
         if f[i] != fprime[i]:
             differences += 1
-            print(f"{i}: expected {f[i]}, got {fprime[i]}, pmf = {s_decoded_pmfs[i]}")
+            # print(f"{i}: expected {f[i]}, got {fprime[i]}, pmf = {s_decoded_pmfs[i]}")
+    if differences <= 1:
+        full_recovered_keys += 1
     differences_arr.append(differences)
 
     print(f"For key {key_idx} have total {differences} errors:", file=outfile)
