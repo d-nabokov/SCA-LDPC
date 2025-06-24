@@ -912,9 +912,9 @@ impl<
         let mut edges_comb = self.edges_comb.clone();
         
         let BVARS = self.N - self.R; // number of B-variables
-        let SW = self.DC - 1; // each check node has SW B-variables + 1 BSUM variable
+        let SW = self.DC - 1; // each check node has SW B-variables + 1 BSIZE variable
 
-        // 1, 2: Initialize the channel values (steps are based on https://ieeexplore.ieee.org/abstract/document/5610969)
+        // 1, 2: Initialize the channel values (steps are based on https://ieeexplore.ieee.org/abstract/document/5610969, Algorithm 3)
         let mut c2v_init = QaryLlrs::<BSIZE>([FloatType::default(); BSIZE]);
         normalize_log_probs(&mut c2v_init.0);
         for (var_idx, (v, m)) in (0..).zip(vn.iter_mut().zip(channel_llr)) {
@@ -1069,6 +1069,98 @@ impl<
 
             final_llrs.push(Self::into_probability_domain(&sum.0));
             hard_decision[var_idx as usize] = C::i2b::<B>(Self::arg_max::<BSIZE>(sum));
+        }
+
+        Ok((final_llrs, hard_decision))
+    }
+
+    // Implements the sum product algorithm
+    // Uses layered approach
+    // 
+    // Note: the implementation can't handle impossible values, meaning that 
+    // channel_llr and channel_llr_comb should not contain -inf. That's because we
+    // always assume the algorithm will be used for the imperfect oracle
+    pub fn sum_product_layered(&self, channel_llr: Vec<QaryLlrs<BSIZE>>, channel_llr_comb: Vec<QaryLlrs<COMB_SIZE>>) -> Result<(Vec<[FloatType; BSIZE]>, Vec<BType>)> {
+        self.check_all_finite_assert(&channel_llr);
+        self.check_all_finite_assert_comb(&channel_llr_comb);
+
+        // Clone the states that we need to mutate
+        let mut vn = self.vn.clone();
+        let mut vn_comb = self.vn_comb.clone();
+        let mut edges = self.edges.clone();
+        let mut edges_comb = self.edges_comb.clone();
+        
+        let BVARS = self.N - self.R; // number of B-variables
+        let SW = self.DC - 1; // each check node has SW B-variables + 1 BSIZE variable
+
+        let mut hard_decision = vec![BType::zero(); BVARS];
+        let mut final_llrs = Vec::with_capacity(BVARS);
+
+        for (var_idx, (v, m)) in (0..).zip(vn.iter_mut().zip(channel_llr)) {
+            v.channel = Some(m);
+            // For each check node connected to var_idx, copy prior distribution `m` into edges[..].v2c
+            for key in v.checks(var_idx) {
+                // We assume that only plus or minus ones are present in the parity check matrix
+                let mut edge = debug_unwrap!(edges.get_mut(&key));
+                edge.v2c.insert(P::mult_by_parity(&m, self.parity_check[&key]));
+            }
+        }
+        // Similarly for comb variables; note: var_idx starts NOT from 0
+        for (var_idx, (v, m)) in ((BVARS as Key1D)..).zip(vn_comb.iter_mut().zip(channel_llr_comb)) {
+            v.channel = Some(m);
+            for key in v.checks(var_idx) {
+                let mut edge = debug_unwrap!(edges_comb.get_mut(&key));
+                edge.v2c.insert(P::mult_by_parity(&m, self.parity_check[&key]));
+            }
+        }
+
+        let mut it = 0;
+        'decoding: loop {
+            it += 1;
+
+            // Updating all check variables
+            for (check_idx, check) in (0..).zip(&*self.cn) {
+                let beta_i = Self::check_node_c2v_sum_product(
+                    check_idx, check, &edges, &edges_comb, &self.parity_check, SW
+                );
+
+                for (key, beta_ij) in check.variables(check_idx).zip(&beta_i) {
+                    let mut edge = debug_unwrap!(edges.get_mut(&key));
+                    edge.c2v.replace(*beta_ij);
+                }
+            }
+            
+            // Updating all node variables
+            for (var_idx, var) in (0..).zip(&*vn) {
+                let mut sum: QaryLlrs<BSIZE> = debug_unwrap!(var.channel);
+                for key in var.checks(var_idx as Key1D) {
+                    let edge = debug_unwrap!(edges.get(&key));
+                    let incoming = debug_unwrap!(edge.c2v);
+                    sum = P::add_with_mult_by_parity(&sum, &incoming, self.parity_check[&key]);
+                }
+                // If we reach final iteration, save the combined probabilities, no
+                // need to update v2c anymore
+                if it >= self.max_iter {
+                    final_llrs.push(Self::into_probability_domain(&sum.0));
+                    hard_decision[var_idx as usize] = C::i2b::<B>(Self::arg_max::<BSIZE>(sum));
+                    continue;
+                }
+
+                for key in var.checks(var_idx as Key1D) {
+                    let mut edge = debug_unwrap!(edges.get_mut(&key));
+                    let incoming = debug_unwrap!(edge.c2v);
+                    // TODO: Very important! if some symbols are impossible, i.e. equal to -inf, then
+                    // approach with subtraction is not correct, need to actually compute they "fairly"
+                    let mut prim_out = P::sub_with_mult_by_parity_then_mult(&sum, &incoming, self.parity_check[&key]);
+                    // message normalization
+                    normalize_log_probs(&mut prim_out.0);
+                    edge.v2c.replace(prim_out);
+                }
+            }
+            
+            if it >= self.max_iter {
+                break 'decoding;
+            }
         }
 
         Ok((final_llrs, hard_decision))
