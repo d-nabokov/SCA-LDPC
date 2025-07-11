@@ -49,19 +49,6 @@ if [ ! -d "$PROTOGRAPH_DIR" ] || [ -z "$(ls -A $PROTOGRAPH_DIR 2>/dev/null)" ]; 
     echo -e "${COLOR}Cloning ProtographLDPC submodule...${RESET}"
     git submodule init
     git submodule update
-    pushd "$PROTOGRAPH_DIR"
-    git pull --recurse-submodules
-    git submodule update --init --recursive
-    pushd LDPC-codes
-    make
-    popd
-    pushd peg
-    make
-    popd
-    popd
-fi
-
-if [ ! -f "$PROTOGRAPH_DIR/LDPC-codes/libldpc.a" ] || [ ! -f "$PROTOGRAPH_DIR/peg/libpeg.a" ]; then
     echo -e "${COLOR}Building ProtographLDPC library...${RESET}"
     pushd "$PROTOGRAPH_DIR"
     git pull --recurse-submodules
