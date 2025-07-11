@@ -1,5 +1,5 @@
+import random
 from math import comb as binomial
-from os import urandom
 
 import numpy as np
 
@@ -34,10 +34,8 @@ def secret_range_len(sum_weight):
 
 def sample_secret_coefs(n):
     ret = [0] * n
-    # not the most efficient way, some bits are unused
-    rnd = urandom(n)
     for i in range(n):
-        r = rnd[i]
+        r = random.getrandbits(2 * ETA)
         for _ in range(ETA):
             ret[i] += r & 1
             r >>= 1
@@ -57,7 +55,7 @@ def coding_from_patterns(pattern, sum_weight=1):
         return {s: (p_val,) for s, p_val in zip(range(-B, B + 1), pattern)}
 
 
-def secret_distribution(sum_weight=1):
+def secret_distribution(eta=ETA, sum_weight=1):
     B = sum_weight * ETA
     n = 2 * B
     den = 2**n

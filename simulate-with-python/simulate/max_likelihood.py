@@ -81,32 +81,6 @@ def pr_cond_yx(y, x, pr_oracle):
     return res
 
 
-def pr_y(y, pr_oracle, coding, s_pmf_array):
-    # compute Pr[Y = y]
-    res = 0
-    for x, pr in zip(coding, s_pmf_array):
-        pr_xprime_y = pr * pr_cond_yx(y, x, pr_oracle)
-        res += pr_xprime_y
-    return res
-
-
-def pr_cond_xy(
-    x,
-    y,
-    pr_oracle,
-    pr_x,
-    coding,
-    s_pmf_array,
-    pr_y_saved=None,
-):
-    # compute Pr[X = x | Y = y] where x = coding[s]
-    if pr_y_saved is None:
-        pr_y_saved = pr_y(y, pr_oracle, coding, s_pmf_array)
-    if pr_y_saved == 0:
-        return 0
-    return pr_cond_yx(y, x, pr_oracle) * pr_x / pr_y_saved
-
-
 def pr_of_y_from_prediction(pred_y, y):
     res = 1
     for p, yval in zip(pred_y, y):
@@ -123,16 +97,10 @@ def s_distribution_from_hard_y(y, pr_oracle, coding, s_pmf_array):
     assert coding is not None and len(coding) >= 1 and len(coding[0]) >= 1
     distr = [0] * len(coding)
     for i, (x, pr) in enumerate(zip(coding, s_pmf_array)):
-        pr_y_saved = pr_y(y, pr_oracle, coding, s_pmf_array)
-        distr[i] = pr_cond_xy(
-            x,
-            y,
-            pr_oracle,
-            pr,
-            coding,
-            s_pmf_array,
-            pr_y_saved,
-        )
+        distr[i] = pr_cond_yx(y, x, pr_oracle) * pr
+    pr_y = sum(distr)
+    for i in range(len(coding)):
+        distr[i] /= pr_y
     return distr
 
 # Compute Pr[S = s | Y = y] for all possible y. Assume that coding have the same number

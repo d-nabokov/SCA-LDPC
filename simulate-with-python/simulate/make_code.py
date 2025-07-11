@@ -21,6 +21,8 @@ if not os.path.exists(protograph_library_path):
     exit()
 
 sys.path.append(os.path.join(protograph_library_path, "LDPC-library"))
+from libs.Protograph import Protograph
+from libs.ProtographLDPC import ProtographLDPC
 from libs.RegularLDPC import RegularLDPC
 
 logger = logging.getLogger(__name__)
@@ -303,3 +305,11 @@ def generate_regular_ldpc_as_tanner(n, k, row_weight):
         for row_idx in row_idxs:
             tanner[row_idx].append(col_idx)
     return tanner
+
+
+# generate tall matrix with n variables, k check nodes with fixed row_weight
+def generate_ldpc_from_protograph(protograph_path, factor):
+    proto = Protograph(protograph_path)
+    ldpc_code = ProtographLDPC(protograph=proto, factor=factor, construction="peg")
+    tanner = ldpc_code.tanner_graph
+    return list(tanner[i] for i in range(len(tanner)))
