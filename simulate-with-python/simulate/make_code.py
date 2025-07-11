@@ -12,12 +12,7 @@ protograph_library_base_path = os.path.join(os.path.dirname(__file__), os.path.p
 protograph_library_path = os.path.join(protograph_library_base_path, "ProtographLDPC")
 
 if not os.path.exists(protograph_library_path):
-    print(
-        f"ProtographLDPC library is not installed, from {protograph_library_base_path} folder run:"
-    )
-    print(
-        "git submodule init; git submodule update; cd ProtographLDPC; git pull --recurse-submodules; git submodule update --init --recursive; cd LDPC-codes/; make; cd ..; cd peg/; make; cd ../.."
-    )
+    print("ProtographLDPC library is not installed, run setup_environment.sh")
     exit()
 
 sys.path.append(os.path.join(protograph_library_path, "LDPC-library"))

@@ -17,6 +17,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
 VENV_DEST=$(cd "$SCRIPT_DIR/.." && pwd)/python-virtualenv
 LIBOQS_RS=$(cd "$SCRIPT_DIR/.." && pwd)/dependencies/liboqs-rs-bindings
 LIBOQS_C="$LIBOQS_RS/liboqs"
+PROTOGRAPH_DIR="$SCRIPT_DIR/ProtographLDPC"
 
 pushd "$SCRIPT_DIR"
 
@@ -40,6 +41,37 @@ if [ ! -f "$LIBOQS_C/build/lib/liboqs.a" ]; then
     echo -e "${COLOR}C-library not built. Building now (manually check correct system dependencies are installed, then press enter)...${RESET}"
     pushd $LIBOQS_RS
     bash build-oqs.sh --yes
+    popd
+fi
+
+# Build ProtographLDPC library if missing
+if [ ! -d "$PROTOGRAPH_DIR" ] || [ -z "$(ls -A $PROTOGRAPH_DIR 2>/dev/null)" ]; then
+    echo -e "${COLOR}Cloning ProtographLDPC submodule...${RESET}"
+    git submodule init
+    git submodule update
+    pushd "$PROTOGRAPH_DIR"
+    git pull --recurse-submodules
+    git submodule update --init --recursive
+    pushd LDPC-codes
+    make
+    popd
+    pushd peg
+    make
+    popd
+    popd
+fi
+
+if [ ! -f "$PROTOGRAPH_DIR/LDPC-codes/libldpc.a" ] || [ ! -f "$PROTOGRAPH_DIR/peg/libpeg.a" ]; then
+    echo -e "${COLOR}Building ProtographLDPC library...${RESET}"
+    pushd "$PROTOGRAPH_DIR"
+    git pull --recurse-submodules
+    git submodule update --init --recursive
+    pushd LDPC-codes
+    make
+    popd
+    pushd peg
+    make
+    popd
     popd
 fi
 
