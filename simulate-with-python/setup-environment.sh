@@ -14,12 +14,8 @@ IMPORTANT='\033[1;31m'
 RESET='\033[0m' # No Color
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
-VENV_DEST="$SCRIPT_DIR/../python-virtualenv"
-mkdir -p "$VENV_DEST"
-VENV_DEST="$(realpath $VENV_DEST)"
-LIBOQS_RS="$SCRIPT_DIR/../dependencies/liboqs-rs-bindings/"
-mkdir -p "$LIBOQS_RS"
-LIBOQS_RS="$(realpath $LIBOQS_RS)"
+VENV_DEST=$(cd "$SCRIPT_DIR/.." && pwd)/python-virtualenv
+LIBOQS_RS=$(cd "$SCRIPT_DIR/.." && pwd)/dependencies/liboqs-rs-bindings
 LIBOQS_C="$LIBOQS_RS/liboqs"
 
 pushd "$SCRIPT_DIR"
