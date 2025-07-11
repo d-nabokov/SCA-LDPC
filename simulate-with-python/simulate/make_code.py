@@ -1,10 +1,24 @@
 import logging
+import os
+import sys
 from math import ceil
 
 import numpy as np
 from scipy.linalg import circulant
 
 from . import distance_spectrum, utils
+
+protograph_library_base_path = os.path.join(os.path.dirname(__file__), os.path.pardir)
+protograph_library_path = os.path.join(protograph_library_base_path, "ProtographLDPC")
+
+if not os.path.exists(protograph_library_path):
+    print("ProtographLDPC library is not installed, run setup_environment.sh")
+    exit()
+
+sys.path.append(os.path.join(protograph_library_path, "LDPC-library"))
+from libs.Protograph import Protograph
+from libs.ProtographLDPC import ProtographLDPC
+from libs.RegularLDPC import RegularLDPC
 
 logger = logging.getLogger(__name__)
 
@@ -271,3 +285,26 @@ def make_random_ldpc_parity_check_matrix_with_identity(n, weight, seed=None):
     H0 = make_random_ldpc_parity_check_matrix(n, weight, seed)
     H = flatten_matrix_parts([H0, np.identity(n, dtype=int)])
     return H
+
+
+# generate tall matrix with n variables, k check nodes with fixed row_weight
+def generate_regular_ldpc_as_tanner(n, k, row_weight):
+    # library can generate transposed matrix
+    if k >= n:
+        ldpc_code = RegularLDPC([k, n, row_weight], "peg", verbose=False)
+    else:
+        ldpc_code = RegularLDPC([k, n, row_weight], "populate-columns", verbose=False)
+    transposed_tanner = ldpc_code.tanner_graph
+    tanner = [[] for _ in range(k)]
+    for col_idx, row_idxs in transposed_tanner.items():
+        for row_idx in row_idxs:
+            tanner[row_idx].append(col_idx)
+    return tanner
+
+
+# generate tall matrix with n variables, k check nodes with fixed row_weight
+def generate_ldpc_from_protograph(protograph_path, factor):
+    proto = Protograph(protograph_path)
+    ldpc_code = ProtographLDPC(protograph=proto, factor=factor, construction="peg")
+    tanner = ldpc_code.tanner_graph
+    return list(tanner[i] for i in range(len(tanner)))

@@ -432,6 +432,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lnexp"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f98924c778103b33dcf6beb1af911977e5d65c6cae74b45e133b3c90bd6db948"
+
+[[package]]
 name = "lock_api"
 version = "0.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -448,6 +454,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6389c490849ff5bc16be905ae24bc913a9c8892e19b2341dbc175e14c341c2b8"
 dependencies = [
  "cfg-if 1.0.0",
+]
+
+[[package]]
+name = "logsumexp"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "daa43db95f1a28b0f6430b755090b6a781e7577093e6ded4624bb806fa7166ec"
+dependencies = [
+ "lnexp",
 ]
 
 [[package]]
@@ -951,6 +966,7 @@ dependencies = [
  "itertools",
  "liboqs-rs-bindings",
  "log",
+ "logsumexp",
  "ndarray",
  "num",
  "numpy",

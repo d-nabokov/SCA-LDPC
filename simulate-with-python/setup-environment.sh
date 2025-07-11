@@ -14,11 +14,10 @@ IMPORTANT='\033[1;31m'
 RESET='\033[0m' # No Color
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
-VENV_DEST="$SCRIPT_DIR/../python-virtualenv"
-VENV_DEST="$(realpath $VENV_DEST)"
-LIBOQS_RS="$SCRIPT_DIR/../dependencies/liboqs-rs-bindings/"
-LIBOQS_RS="$(realpath $LIBOQS_RS)"
+VENV_DEST=$(cd "$SCRIPT_DIR/.." && pwd)/python-virtualenv
+LIBOQS_RS=$(cd "$SCRIPT_DIR/.." && pwd)/dependencies/liboqs-rs-bindings
 LIBOQS_C="$LIBOQS_RS/liboqs"
+PROTOGRAPH_DIR="$SCRIPT_DIR/ProtographLDPC"
 
 pushd "$SCRIPT_DIR"
 
@@ -32,6 +31,24 @@ source $VENV_DEST/bin/activate
 
 echo -e "${COLOR}Making sure all specified python packages are installed...${RESET}"
 pip install -r requirements.txt
+
+# Build ProtographLDPC library if missing
+if [ ! -d "$PROTOGRAPH_DIR" ] || [ -z "$(ls -A $PROTOGRAPH_DIR 2>/dev/null)" ]; then
+    echo -e "${COLOR}Cloning ProtographLDPC submodule...${RESET}"
+    git submodule init
+    git submodule update
+    echo -e "${COLOR}Building ProtographLDPC library...${RESET}"
+    pushd "$PROTOGRAPH_DIR"
+    git pull --recurse-submodules
+    git submodule update --init --recursive
+    pushd LDPC-codes
+    make
+    popd
+    pushd peg
+    make
+    popd
+    popd
+fi
 
 if [ ! -f "$LIBOQS_C/README.md" ]; then
     echo -e "${COLOR}Checking out submodules if not already done so...${RESET}"

@@ -23,6 +23,7 @@ fastcmp = "1.0.1"
 num = "0.4.0"
 liboqs-rs-bindings = { path = "../../dependencies/liboqs-rs-bindings" }
 itertools = "0.10.3"
+logsumexp = "0.1.0"
 
 [dev-dependencies]
 criterion = { version="0.3", features = ["html_reports"] }
