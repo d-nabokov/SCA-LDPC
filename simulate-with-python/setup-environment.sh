@@ -32,18 +32,6 @@ source $VENV_DEST/bin/activate
 echo -e "${COLOR}Making sure all specified python packages are installed...${RESET}"
 pip install -r requirements.txt
 
-if [ ! -f "$LIBOQS_C/README.md" ]; then
-    echo -e "${COLOR}Checking out submodules if not already done so...${RESET}"
-    git submodule update --init --recursive
-fi
-
-if [ ! -f "$LIBOQS_C/build/lib/liboqs.a" ]; then
-    echo -e "${COLOR}C-library not built. Building now (manually check correct system dependencies are installed, then press enter)...${RESET}"
-    pushd $LIBOQS_RS
-    bash build-oqs.sh --yes
-    popd
-fi
-
 # Build ProtographLDPC library if missing
 if [ ! -d "$PROTOGRAPH_DIR" ] || [ -z "$(ls -A $PROTOGRAPH_DIR 2>/dev/null)" ]; then
     echo -e "${COLOR}Cloning ProtographLDPC submodule...${RESET}"
@@ -59,6 +47,18 @@ if [ ! -d "$PROTOGRAPH_DIR" ] || [ -z "$(ls -A $PROTOGRAPH_DIR 2>/dev/null)" ]; 
     pushd peg
     make
     popd
+    popd
+fi
+
+if [ ! -f "$LIBOQS_C/README.md" ]; then
+    echo -e "${COLOR}Checking out submodules if not already done so...${RESET}"
+    git submodule update --init --recursive
+fi
+
+if [ ! -f "$LIBOQS_C/build/lib/liboqs.a" ]; then
+    echo -e "${COLOR}C-library not built. Building now (manually check correct system dependencies are installed, then press enter)...${RESET}"
+    pushd $LIBOQS_RS
+    bash build-oqs.sh --yes
     popd
 fi
 
