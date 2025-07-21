@@ -105,6 +105,13 @@ fn simulate_rs(_py: Python, m: &PyModule) -> PyResult<()> {
         }
     );
 
+    register_py_decoder_joint_distribution_class!(
+        m <= DecoderKyberB3SW4 {
+            B: 3,
+            SW: 4
+        }
+    );
+
     // Full Kyber-768, sum_weight = 6, check_blocks = 1
     register_py_decoder_sum_distribution_class!(
         m <= DecoderN1024R256SW6 {
