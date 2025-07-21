@@ -471,6 +471,7 @@ for key_idx in keys_to_test:
         continue
     # read posterior distribution of check variables
     filename = filename_pattern.format(key_idx)
+
     (
         H,
         variable_in_check_idxs,
@@ -482,53 +483,6 @@ for key_idx in keys_to_test:
 
     if H is None or check_variables is None:
         exit()
-    row_counts = np.count_nonzero(H, axis=1)
-    max_row_weight = np.max(row_counts)
-    col_counts = np.count_nonzero(H, axis=0)
-    max_col_weight = np.max(col_counts)
-
-    if (max_row_weight - 1) > check_weight:
-        print(f"skipping too large predicted collision index for {key_idx}")
-        continue
-
-    secret_variables = []
-
-    single_checks = sorted(zip(single_check_idxs, single_check_distr))
-    single_checks_idx = 0
-    for i in range(p):
-        if (
-            single_checks_idx < len(single_checks)
-            and single_checks[single_checks_idx][0] == i
-        ):
-            distr = single_checks[single_checks_idx][1]
-            secret_variables.append(resize_pmf(distr, B))
-            single_checks_idx += 1
-        else:
-            # If we don't query a single check directly, then usually we just put prior ternary pmf
-            # of coefficients of f. However, with extended variables we sometimes need to put pmf
-            # of f[i] + f[i+1]
-            if i > 0 and i <= col_idx:
-                prior_coef_weight = 1
-            elif USE_EXTENDED_VARIABLES:
-                prior_coef_weight = 2
-            else:
-                prior_coef_weight = 1
-            prior_coef_distr = prior_distr[prior_coef_weight - 1]
-            secret_variables.append(resize_pmf(prior_coef_distr, B))
-
-    # convert to numpy arrays for Rust be able to work on the arrays
-    secret_variables = np.array(secret_variables, dtype=np.float32)
-    check_variables = np.array(check_variables, dtype=np.float32)
-    # if collision value is 1, we need to multiply the result by -1
-    if collisions[key_idx][0][1] == 1:
-        secret_variables = secret_variables[:, ::-1]
-        check_variables = check_variables[:, ::-1]
-
-    # Rust does not accept zero values, set them to very small probability
-    epsilon = 1e-20
-    secret_variables[secret_variables == 0] = epsilon
-    check_variables[check_variables == 0] = epsilon
-
     decoder_map = {
         (False, 2): DecoderNTRUW2,
         (False, 4): DecoderNTRUW4,
@@ -537,73 +491,73 @@ for key_idx in keys_to_test:
         (True, 4): DecoderExtendedNTRUW4,
         (True, 6): DecoderExtendedNTRUW6,
     }
-    if USE_EXTENDED_VARIABLES:
-        ldpc_check_weight = check_weight // 2
-    else:
-        ldpc_check_weight = check_weight
-    if (USE_EXTENDED_VARIABLES, ldpc_check_weight) not in decoder_map:
-        raise ValueError("Not supported check weight")
-    decoder = decoder_map[(USE_EXTENDED_VARIABLES, ldpc_check_weight)](
-        H.astype("int8"), max_col_weight, max_row_weight, iterations
-    )
+    epsilon = 1e-20
+    if len(check_variables) > 0:
+        row_counts = np.count_nonzero(H, axis=1)
+        max_row_weight = np.max(row_counts)
+        col_counts = np.count_nonzero(H, axis=0)
+        max_col_weight = np.max(col_counts)
 
-    # s_decoded_pmfs = decoder.decode_with_pr(secret_variables, check_variables)
-    # s_decoded_pmfs = decode_with_post_block_flip_optimization(
-    #     decoder, secret_variables, check_variables, variable_in_check_idxs, col_idx, pred_col_idx
-    # )
-    # for i, pmf in enumerate(s_decoded_pmfs):
-    #     print(f"{i}: {pmf}")
+        # if (max_row_weight - 1) > check_weight:
+        #     print(f"skipping too large predicted collision index for {key_idx}")
+        #     continue
+
+        secret_variables = []
+
+        single_checks = sorted(zip(single_check_idxs, single_check_distr))
+        single_checks_idx = 0
+        for i in range(p):
+            if (
+                single_checks_idx < len(single_checks)
+                and single_checks[single_checks_idx][0] == i
+            ):
+                distr = single_checks[single_checks_idx][1]
+                secret_variables.append(resize_pmf(distr, B))
+                single_checks_idx += 1
+            else:
+                # If we don't query a single check directly, then usually we just put prior ternary pmf
+                # of coefficients of f. However, with extended variables we sometimes need to put pmf
+                # of f[i] + f[i+1]
+                if i > 0 and i <= col_idx:
+                    prior_coef_weight = 1
+                elif USE_EXTENDED_VARIABLES:
+                    prior_coef_weight = 2
+                else:
+                    prior_coef_weight = 1
+                prior_coef_distr = prior_distr[prior_coef_weight - 1]
+                secret_variables.append(resize_pmf(prior_coef_distr, B))
+
+        # convert to numpy arrays for Rust be able to work on the arrays
+        secret_variables = np.array(secret_variables, dtype=np.float32)
+        check_variables = np.array(check_variables, dtype=np.float32)
+        # if collision value is 1, we need to multiply the result by -1
+        if collisions[key_idx][0][1] == 1:
+            secret_variables = secret_variables[:, ::-1]
+            check_variables = check_variables[:, ::-1]
+
+        # Rust does not accept zero values, set them to very small probability
+        secret_variables[secret_variables == 0] = epsilon
+        check_variables[check_variables == 0] = epsilon
+
+        if USE_EXTENDED_VARIABLES:
+            ldpc_check_weight = check_weight // 2
+        else:
+            ldpc_check_weight = check_weight
+        if (USE_EXTENDED_VARIABLES, ldpc_check_weight) not in decoder_map:
+            raise ValueError("Not supported check weight")
+        decoder = decoder_map[(USE_EXTENDED_VARIABLES, ldpc_check_weight)](
+            H.astype("int8"), max_col_weight, max_row_weight, iterations
+        )
+        s_decoded_pmfs = decoder.decode_with_pr(secret_variables, check_variables)
+    else:
+        # assume here that we treated all inputs as single (extended) variables
+        s_decoded_pmfs = np.zeros((p, (2 * B + 1)))
+        for idx, pmf in zip(single_check_idxs, single_check_distr):
+            s_decoded_pmfs[idx] = resize_pmf(pmf, B)
+        if collisions[key_idx][0][1] == 1:
+            s_decoded_pmfs = s_decoded_pmfs[:, ::-1]
 
     f = keys[key_idx]
-    # fprime = list(np.argmax(pmf) - 1 for pmf in s_decoded_pmfs)
-
-    # BSUM = len(check_variables[0]) // 2
-    # unsatisfied_checks = 0
-    # print("Getting wrong checks even with majority voting:")
-    # for variable_idxs, check_pmf in zip(variable_in_check_idxs, check_variables):
-    #     if variable_idxs[0] < col_idx:
-    #         continue
-    #     true_beta = 0
-    #     for idx in variable_idxs:
-    #         true_beta += f[idx]
-    #     beta_from_pmf = np.argmax(check_pmf) - BSUM
-    #     if true_beta != beta_from_pmf:
-    #         print(f"{variable_idxs}: {true_beta} != {beta_from_pmf}", file=outfile)
-    # print("++++++++++")
-    # for variable_idxs, check_pmf in zip(variable_in_check_idxs, check_variables):
-    #     if variable_idxs[0] < col_idx:
-    #         continue
-    #     beta_u = 0
-    #     true_beta = 0
-    #     for idx in variable_idxs:
-    #         beta_u += fprime[idx]
-    #         true_beta += f[idx]
-    #     beta_from_pmf = np.argmax(check_pmf) - BSUM
-    #     if beta_u != beta_from_pmf:
-    #         unsatisfied_checks += 1
-    #         print(
-    #             f"{variable_idxs}: {beta_u} != {beta_from_pmf} =? {true_beta}; {'(check pmf with error)' if beta_from_pmf != true_beta else ''}"
-    #         )
-    #         for idx in variable_idxs:
-    #             if is_unreliable(s_decoded_pmfs[idx]):
-    #                 print(f"{idx} is unreliable")
-    # print(f"{unsatisfied_checks=}")
-
-    # s_decoded_pmfs = decode_with_post_block_flip_optimization(
-    #     decoder,
-    #     secret_variables,
-    #     check_variables,
-    #     variable_in_check_idxs,
-    #     col_idx,
-    #     pred_col_idx,
-    # )
-    s_decoded_pmfs = decoder.decode_with_pr(secret_variables, check_variables)
-    # super_unreliable = list(
-    #     idx
-    #     for idx in range(col_idx, len(s_decoded_pmfs))
-    #     if is_unreliable(s_decoded_pmfs[idx], 0.6)
-    # )
-    # print(f"very unreliable coefs: {super_unreliable}")
     fprime = list(np.argmax(pmf) - B for pmf in s_decoded_pmfs)
     # differences = sum(f[i] != fprime[i] for i in range(len(f)))
     # if differences == 0:
@@ -641,7 +595,8 @@ for key_idx in keys_to_test:
                 resize_pmf([f_one_prob, f_zero_prob, f_one_prob], 1)
             )
     secret_variables = np.array(secret_variables, dtype=np.float32)
-    check_variables = s_decoded_pmfs[col_idx + 1 :] + s_decoded_pmfs[0:1]
+    check_variables = np.vstack((s_decoded_pmfs[col_idx + 1 :], s_decoded_pmfs[0:1]))
+    # check_variables = s_decoded_pmfs[col_idx + 1 :] + s_decoded_pmfs[0:1]
     check_variables = np.array(check_variables, dtype=np.float32)
     decoder = decoder_map[(False, 2)](
         matrix.astype("int8"), max_col_weight, max_row_weight, iterations
