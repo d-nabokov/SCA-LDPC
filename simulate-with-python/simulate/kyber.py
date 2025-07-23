@@ -56,7 +56,7 @@ def coding_from_patterns(pattern, sum_weight=1):
 
 
 def secret_distribution(eta=ETA, sum_weight=1):
-    B = sum_weight * ETA
+    B = sum_weight * eta
     n = 2 * B
     den = 2**n
     return {s: (binomial(n, s + B) / den) for s in range(-B, B + 1)}
