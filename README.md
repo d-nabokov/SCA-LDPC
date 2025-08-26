@@ -9,10 +9,6 @@ This is some code for simulating the performance of using soft decoding techniqu
 
 Afterwards the scripts in the `simulate-with-python` can be executed while being certain you are using the same dependencies as specified in `requirements.txt`
 
-## Running rust program
-
-This is just for experimentation, there is nothing concrete here yet. There might never be. It might never be necessary to use rust for these simulations.
-
 <!--
 ## Description
 
