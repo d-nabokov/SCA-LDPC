@@ -24,22 +24,22 @@ num_blocks = 3
 # num_blocks = 4
 
 
-def secret_range(sum_weight):
-    return range(-sum_weight * ETA, sum_weight * ETA + 1)
+def secret_range(sum_weight, eta=ETA):
+    return range(-sum_weight * eta, sum_weight * eta + 1)
 
 
-def secret_range_len(sum_weight):
-    return 2 * sum_weight * ETA + 1
+def secret_range_len(sum_weight, eta=ETA):
+    return 2 * sum_weight * eta + 1
 
 
-def sample_secret_coefs(n):
+def sample_secret_coefs(n, eta=ETA):
     ret = [0] * n
     for i in range(n):
-        r = random.getrandbits(2 * ETA)
-        for _ in range(ETA):
+        r = random.getrandbits(2 * eta)
+        for _ in range(eta):
             ret[i] += r & 1
             r >>= 1
-        for _ in range(ETA):
+        for _ in range(eta):
             ret[i] -= r & 1
             r >>= 1
     return ret
